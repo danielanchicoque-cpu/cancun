@@ -12,7 +12,7 @@ const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const INFO = join(process.env.APPDATA ?? '', 'Cancun', 'bridge.json')
 const US = 1_000_000
 // Campos de las operaciones que son tiempos (se convierten de segundos a µs).
-const TIME_FIELDS = new Set(['start', 'duration', 'sourceIn', 'time', 'at', 'fadeIn', 'fadeOut'])
+const TIME_FIELDS = new Set(['start', 'duration', 'sourceIn', 'time', 'at', 'fadeIn', 'fadeOut', 'delta'])
 
 const HELP = `cancun — controla el editor Cancun desde la terminal (tiempos en segundos)
 
@@ -43,28 +43,57 @@ Exportar
 
 const OPS = `Operaciones (campo "op"). Tiempos en segundos; ids salen de "cancun summary".
 
-{"op":"addClip","mediaId":ID,"trackId?":ID,"start?":s,"sourceIn?":s,"duration?":s}
-    video/imagen sin start → al final de la pista principal (magnética)
+Clips
+{"op":"addClip","mediaId":ID,"trackId?":ID|"new","start?":s,"sourceIn?":s,"duration?":s}
+    video/imagen sin start → al final de la pista principal
 {"op":"addText","text":"Hola","start":s,"duration?":s,"style?":{"size":72,"color":"#fff","font":"Arial","bold":true,"strokeWidth":1,"strokeColor":"#000","background":null,"align":"center"}}
-{"op":"addTrack","kind":"video|audio|text"}
-{"op":"moveClip","clipId":ID,"start":s,"trackId?":ID}
+{"op":"addEffect","effect":ID_EFECTO,"start":s,"duration?":s,"params?":{"intensity":0.6,"speed":0.5}}
+    efectos: blur shake glitch rgbsplit zoompulse flash grain vhs bw sepia vignette lightleak pixelate
+             mirror cinema strobe invert kaleido scanlines zoomblur heartbeat dreamy
+{"op":"moveClip","clipId":ID,"start":s,"trackId?":ID|"new"}
+{"op":"moveClips","clipIds":[ID...],"delta":s}
 {"op":"trimClip","clipId":ID,"side":"start|end","time":s}      (time = instante de la línea de tiempo)
 {"op":"splitClip","clipId":ID,"at":s}
-{"op":"deleteClip","clipId":ID}
+{"op":"deleteClip","clipId":ID}   {"op":"deleteClips","clipIds":[ID...]}
+{"op":"duplicateClip","clipId":ID}
+{"op":"freezeFrame","clipId":ID,"at":s,"duration?":3}
+{"op":"separateAudio","clipId":ID}
+
+Color y transiciones
 {"op":"setLut","clipId":ID,"lut":{"path":RUTA,"name":"Her","intensity":0.8}}   lut:null para quitar
 {"op":"setTransition","clipId":ID,"transition":{"kind":"fade","duration":0.5}}  con el clip SIGUIENTE pegado
-    kinds: fade dissolve fadeblack fadewhite slideleft slideright slideup slidedown wipeleft wiperight
-           circleopen circleclose zoomin radial pixelize smoothleft
-{"op":"updateClip","clipId":ID,"patch":{...}}  parche parcial, por ejemplo:
-    {"transform":{"x":0,"y":0,"scale":1,"rotation":0,"opacity":1}}   x,y: -1..1 = borde a borde
+    kinds: fade dissolve fadeblack fadewhite flash blur slideleft slideright slideup slidedown zoomin zoomblur
+           spin squeeze cube doorway wipeleft wiperight smoothleft windowslice radial circleopen circleclose
+           heart pagecurl glitch pixelize mosaic swirl ripple burn luma colorphase morph directionalwarp crosswarp
+
+Propiedades (updateClip con parche parcial)
+{"op":"updateClip","clipId":ID,"patch":{...}}, por ejemplo:
+    {"transform":{"x":0,"y":0,"scale":1,"scaleY":null,"rotation":0,"opacity":1,"flipX":false}}   x,y: -1..1
+    {"blend":"normal|screen|multiply|overlay|darken|lighten|softLight|hardLight|colorDodge|colorBurn|linearDodge|linearBurn|difference|exclusion"}
+    {"crop":{"left":0,"top":0,"right":0,"bottom":0}}
     {"color":{"adjust":{"brightness":0,"contrast":0,"saturation":0,"exposure":0,"temperature":0,"tint":0,"highlights":0,"shadows":0,"sharpen":0,"vignette":0}}}  (-1..1)
-    {"volume":1}  (ganancia lineal, 0 = silencio)   {"fadeIn":0.5,"fadeOut":1}   {"speed":2}
+    {"background":{"mode":"none|auto|chroma","feather":0.3,"shrink":0,"chroma":{"color":"#00ff00","intensity":0.4,"shadow":0.1}}}   auto = quitar fondo con IA
+    {"retouch":{"smooth":0.5,"removeBlemishes":0.3,"whiten":0.3,"evenTone":0.2}}
+    {"mask":{"shape":"none|linear|mirror|circle|rectangle|heart|star","x":0,"y":0,"width":0.6,"height":0.6,"rotation":0,"feather":0.05,"invert":false}}
+    {"light":{"enabled":true,"color":"#ffd9a8","intensity":0.5,"x":-0.4,"y":-0.4,"radius":0.8,"subjectOnly":true}}
+    {"animations":{"in":{"name":"zoomIn","duration":0.5},"out":null,"combo":null}}
+        entrada/salida: fade zoomIn zoomOut slideLeft slideRight slideUp slideDown rotate spin pop drop swing
+        combo: pulse shake swing float spin breathe
+    {"volume":1}  (ganancia lineal)   {"fadeIn":0.5,"fadeOut":1}   {"speed":2}   {"freeze":true}
     {"audioFx":{"normalize":true,"denoise":true,"enhanceVoice":true,"isolateVoice":false}}
-    {"background":{"mode":"chroma","chroma":{"color":"#00ff00","intensity":0.4,"shadow":0.1}}}
-    texto: {"text":"...","style":{...}}
+    texto: {"text":"...","style":{...}}    efecto: {"effect":"glitch","params":{"intensity":0.8}}
+
+Keyframes (props: transform.x|y|scale|scaleY|rotation|opacity, volume, color.lut.intensity,
+           color.adjust.<ajuste>, mask.x|y|width|height|rotation|feather, light.intensity|x|y)
+{"op":"setKeyframe","clipId":ID,"prop":"transform.scale","time":s,"value":1.4,"ease?":"linear|easeIn|easeOut|easeInOut|hold"}
+{"op":"removeKeyframe","clipId":ID,"prop":"transform.scale","time":s}
+{"op":"clearKeyframes","clipId":ID,"prop?":"transform.scale"}
+
+Proyecto
+{"op":"setSettings","patch":{"mainMagnet":true,"snap":true,"linkage":true}}
 {"op":"updateTrack","trackId":ID,"patch":{"muted":true,"hidden":false,"locked":false}}
 {"op":"setCanvas","width":1080,"height":1920,"fps":30,"background":"#000000"}
-{"op":"setExport","patch":{"codec":"h264|hevc","bitrate":12000,"fps":30,"hardware":true}}   bitrate en kbps (null = recomendado)
+{"op":"setExport","patch":{"codec":"h264|hevc","bitrate":4900,"rateControl":"vbr|cbr","fps":30,"format":"mp4|mov","hardware":true}}   bitrate en kbps
 {"op":"rename","name":"..."}`
 
 function toMicro(value, key) {
