@@ -10,7 +10,7 @@ import { Icon } from './icons'
 
 const RULER_H = 26
 const SNAP_PX = 8
-const HEIGHT: Record<Track['kind'] | 'main', number> = { main: 70, video: 58, audio: 46, text: 32 }
+const HEIGHT: Record<Track['kind'] | 'main', number> = { main: 70, video: 58, audio: 46, text: 32, effect: 32 }
 
 const trackHeight = (p: Project, t: Track) => (p.tracks[0] === t ? HEIGHT.main : HEIGHT[t.kind])
 

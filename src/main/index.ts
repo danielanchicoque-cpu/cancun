@@ -3,11 +3,13 @@ import { createReadStream, statSync } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
-import type { Project } from '@shared/project'
+import { type Project, normalizeProject } from '@shared/project'
 import { startBridge } from './bridge'
-import { startExport, type ExportJob } from './exporter'
+import { resetChat, sendChat, stopChat, type ChatContext } from './chat'
+import { closeDecode, nextFrame, openDecode } from './decodeFallback'
+import { registerRenderIpc, startExport, type ExportJob } from './exporter'
 import { importLuts, listLuts, loadLut, syncFromCapCut } from './luts'
-import { filmstrip, probe, waveform } from './media'
+import { filmstrip, listSounds, probe, reverseMedia, waveform } from './media'
 import { deleteProject, listProjects, loadProject, saveProject } from './projectStore'
 
 // Esquema propio para que el reproductor lea archivos locales con saltos (Range),
@@ -19,6 +21,7 @@ protocol.registerSchemesAsPrivileged([
 const MIME: Record<string, string> = {
   '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mkv': 'video/x-matroska',
   '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.m4a': 'audio/mp4', '.aac': 'audio/aac', '.ogg': 'audio/ogg', '.flac': 'audio/flac',
+  '.wasm': 'application/wasm', '.tflite': 'application/octet-stream', '.js': 'text/javascript',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.bmp': 'image/bmp'
 }
 
@@ -51,6 +54,11 @@ function serveMedia(request: Request): Response {
 }
 
 const here = dirname(fileURLToPath(import.meta.url))
+const preloadPath = join(here, '../preload/index.cjs')
+const rendererDir = join(here, '../renderer')
+
+/** Efectos de sonido de Daniel (pack de creadores virales). */
+const soundsRoot = () => join(app.getPath('desktop'), 'Multimedia y Contenido', 'Recursos', 'PACK RECURSOS CREADORES VIRALES', 'EFECTOS DE SONIDO')
 
 let win: BrowserWindow | null = null
 let exportJob: ExportJob | null = null
@@ -59,15 +67,19 @@ let exportJob: ExportJob | null = null
 let nextReq = 1
 const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
 
+/** Métodos que pueden tardar mucho (no se cortan por tiempo). */
+const LONG_METHODS = new Set(['export'])
+
 function callRenderer(method: string, params: Record<string, unknown>): Promise<unknown> {
   if (!win) return Promise.reject(new Error('Cancun no tiene ninguna ventana abierta'))
   const id = nextReq++
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject })
     win!.webContents.send('bridge:request', { id, method, params })
-    setTimeout(() => {
-      if (pending.delete(id)) reject(new Error(`La ventana no respondió a "${method}"`))
-    }, 120_000)
+    if (!LONG_METHODS.has(method))
+      setTimeout(() => {
+        if (pending.delete(id)) reject(new Error(`La ventana no respondió a "${method}"`))
+      }, 120_000)
   })
 }
 
@@ -100,7 +112,7 @@ async function handleBridge(method: string, params: Record<string, unknown>): Pr
 // --- IPC de la interfaz ---------------------------------------------------------------
 function registerIpc() {
   ipcMain.handle('projects:list', () => listProjects())
-  ipcMain.handle('projects:load', (_e, id: string) => loadProject(id))
+  ipcMain.handle('projects:load', async (_e, id: string) => normalizeProject(await loadProject(id)))
   ipcMain.handle('projects:save', (_e, p: Project) => saveProject(p))
   ipcMain.handle('projects:delete', (_e, id: string) => deleteProject(id))
 
@@ -119,6 +131,18 @@ function registerIpc() {
   ipcMain.handle('media:filmstrip', (_e, m) => filmstrip(m))
   ipcMain.handle('media:waveform', (_e, m) => waveform(m))
   ipcMain.handle('media:reveal', (_e, path: string) => shell.showItemInFolder(path))
+  ipcMain.handle('media:reverse', (_e, path: string) => reverseMedia(path))
+  ipcMain.handle('sounds:list', () => listSounds(soundsRoot()))
+  ipcMain.handle('paths:app', () => app.getAppPath())
+  ipcMain.handle('decode:open', (_e, path: string, startUs: number, rate: number, w: number, h: number) => openDecode(path, startUs, rate, w, h))
+  ipcMain.handle('decode:frame', (_e, id: number) => nextFrame(id))
+  ipcMain.handle('decode:close', (_e, id: number) => closeDecode(id))
+  ipcMain.handle('chat:send', (_e, text: string, ctx: ChatContext) =>
+    sendChat(text, ctx, app.getAppPath(), (ev) => win?.webContents.send('chat:event', ev))
+  )
+  ipcMain.handle('chat:stop', () => stopChat())
+  ipcMain.handle('chat:reset', () => resetChat())
+  registerRenderIpc()
 
   ipcMain.handle('luts:list', () => listLuts())
   ipcMain.handle('luts:sync', () => syncFromCapCut())
@@ -135,17 +159,21 @@ function registerIpc() {
     return { size: lut.size, domainMin: lut.domainMin, domainMax: lut.domainMax, title: lut.title, data: lut.data }
   })
 
-  ipcMain.handle('export:pick', async (_e, name: string) => {
+  ipcMain.handle('export:pick', async (_e, name: string, format: string = 'mp4') => {
     const r = await dialog.showSaveDialog(win!, {
       title: 'Exportar',
-      defaultPath: join(app.getPath('videos'), `${name || 'Cancun'}.mp4`),
-      filters: [{ name: 'MP4', extensions: ['mp4'] }]
+      defaultPath: join(app.getPath('videos'), `${name || 'Cancun'}.${format}`),
+      filters: [{ name: format.toUpperCase(), extensions: [format] }]
     })
     return r.canceled ? null : r.filePath
   })
   ipcMain.handle('export:start', async (_e, project: Project, output: string) => {
     if (exportJob) throw new Error('Ya hay una exportación en curso')
-    const job = await startExport(project, output, (p) => win?.webContents.send('export:progress', p))
+    const job = await startExport(project, output, (p) => win?.webContents.send('export:progress', p), {
+      preload: preloadPath,
+      rendererUrl: process.env.ELECTRON_RENDERER_URL,
+      rendererDir
+    })
     exportJob = job
     try {
       await job.done
@@ -169,7 +197,7 @@ function createWindow() {
     title: 'Cancun',
     autoHideMenuBar: true,
     webPreferences: {
-      preload: join(here, '../preload/index.cjs'),
+      preload: preloadPath,
       sandbox: false,
       contextIsolation: true,
       backgroundThrottling: false
@@ -179,9 +207,13 @@ function createWindow() {
     win!.maximize()
     win!.show()
   })
-  win.on('closed', () => (win = null))
+  win.on('closed', () => {
+    win = null
+    // Cierra también la ventana oculta del motor de render.
+    for (const w of BrowserWindow.getAllWindows()) w.destroy()
+  })
   if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
-  else win.loadFile(join(here, '../renderer/index.html'))
+  else win.loadFile(join(rendererDir, 'index.html'))
 }
 
 app.commandLine.appendSwitch('enable-gpu-rasterization')
@@ -196,3 +228,4 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => app.quit())
+app.on('before-quit', () => stopChat())

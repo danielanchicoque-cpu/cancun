@@ -1,17 +1,14 @@
-// Ejecuta la exportación: detecta el codificador que sirve en este equipo,
-// prepara los archivos temporales y reporta el progreso.
+// Exportación: la ventana oculta de render dibuja cada cuadro con el compositor GPU
+// (el mismo de la vista previa) y aquí se le pasan a ffmpeg, que mezcla el audio y
+// codifica con la tarjeta gráfica si está disponible.
 
-import { app } from 'electron'
+import { app, BrowserWindow, ipcMain } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
-import type { CubeLut } from '@shared/cube'
 import { buildExport } from '@shared/exportGraph'
 import type { Project } from '@shared/project'
-import { loadLut } from './luts'
 import { FFMPEG, run } from './media'
-
-const FONT_DIR = join(process.env.WINDIR ?? 'C:/Windows', 'Fonts')
 
 const encoderCache = new Map<string, string>()
 
@@ -36,7 +33,82 @@ export async function pickEncoder(codec: 'h264' | 'hevc', hardware: boolean): Pr
 
 export interface ExportProgress {
   fraction: number
-  speed: string
+  /** Cuadros por segundo de render. */
+  fps: number
+  /** Segundos restantes estimados. */
+  eta: number
+}
+
+let renderWin: BrowserWindow | null = null
+let renderReady: Promise<void> | null = null
+
+function renderWindow(preload: string, rendererUrl: string | undefined, rendererDir: string): Promise<BrowserWindow> {
+  if (renderWin && !renderWin.isDestroyed() && renderReady) return renderReady.then(() => renderWin!)
+  renderWin = new BrowserWindow({
+    show: false,
+    width: 320,
+    height: 240,
+    webPreferences: { preload, sandbox: false, contextIsolation: true, backgroundThrottling: false }
+  })
+  renderReady = new Promise<void>((resolve) => ipcMain.once('render:ready', () => resolve()))
+  // Lo que imprime el motor de render queda en render.log (para diagnosticar exportaciones).
+  const log = join(app.getPath('userData'), 'render.log')
+  renderWin.webContents.on('console-message', (e) => {
+    void appendFile(log, `[${new Date().toISOString()}] ${e.level} ${e.message}
+`).catch(() => undefined)
+  })
+  if (rendererUrl) void renderWin.loadURL(`${rendererUrl}/render.html`)
+  else void renderWin.loadFile(join(rendererDir, 'render.html'))
+  renderWin.on('closed', () => {
+    renderWin = null
+    renderReady = null
+  })
+  return renderReady.then(() => renderWin!)
+}
+
+interface Job {
+  ffmpeg: ChildProcess
+  frames: number
+  done: (err?: Error) => void
+  onProgress: (p: ExportProgress) => void
+  started: number
+}
+
+const jobs = new Map<number, Job>()
+let nextJob = 1
+
+export function registerRenderIpc() {
+  ipcMain.handle('render:frame', async (_e, jobId: number, data: Uint8Array, index: number) => {
+    const job = jobs.get(jobId)
+    if (!job) throw new Error('Exportación cancelada')
+    const stdin = job.ffmpeg.stdin!
+    if (stdin.destroyed || stdin.writableEnded) return
+    if (!stdin.write(Buffer.from(data.buffer, data.byteOffset, data.byteLength))) {
+      // Si ffmpeg deja de leer (llegó a la duración o falló), no hay que quedarse esperando.
+      await new Promise<void>((r) => {
+        const done = () => {
+          stdin.off('drain', done)
+          stdin.off('close', done)
+          stdin.off('error', done)
+          r()
+        }
+        stdin.once('drain', done)
+        stdin.once('close', done)
+        stdin.once('error', done)
+      })
+    }
+    if (index + 1 >= job.frames) stdin.end()
+    const elapsed = (Date.now() - job.started) / 1000
+    const fps = (index + 1) / Math.max(elapsed, 0.001)
+    job.onProgress({ fraction: (index + 1) / job.frames, fps, eta: (job.frames - index - 1) / Math.max(fps, 0.001) })
+  })
+  ipcMain.on('render:done', (_e, jobId: number) => jobs.get(jobId)?.ffmpeg.stdin?.end())
+  ipcMain.on('render:fail', (_e, jobId: number, error: string) => {
+    const job = jobs.get(jobId)
+    if (!job) return
+    job.ffmpeg.kill()
+    job.done(new Error(error))
+  })
 }
 
 export interface ExportJob {
@@ -48,51 +120,61 @@ export interface ExportJob {
 export async function startExport(
   project: Project,
   output: string,
-  onProgress: (p: ExportProgress) => void
+  onProgress: (p: ExportProgress) => void,
+  window: { preload: string; rendererUrl: string | undefined; rendererDir: string }
 ): Promise<ExportJob> {
-  const luts = new Map<string, CubeLut>()
-  for (const t of project.tracks)
-    for (const c of t.clips) if (c.type === 'media' && c.color.lut) luts.set(c.color.lut.path, await loadLut(c.color.lut.path))
-
   const encoder = await pickEncoder(project.export.codec, project.export.hardware)
   const tmpDir = await mkdtemp(join(app.getPath('temp'), 'cancun-export-'))
-  const plan = buildExport(project, { output, tmpDir, luts, fontDir: FONT_DIR, encoder })
-  for (const f of plan.files) await writeFile(f.path, f.content, 'utf8')
+  const filterPath = join(tmpDir, 'audio.txt').replace(/\\/g, '/')
+  const plan = buildExport(project, { output, encoder, filterPath })
+  if (plan.filter) await writeFile(filterPath, plan.filter, 'utf8')
 
-  let child: ChildProcess | null = null
+  const win = await renderWindow(window.preload, window.rendererUrl, window.rendererDir)
+  const jobId = nextJob++
+  const ffmpeg = spawn(FFMPEG, plan.args, { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] })
+  let stderr = ''
+  ffmpeg.stderr!.on('data', (d: Buffer) => (stderr = (stderr + d.toString()).slice(-6000)))
   let cancelled = false
+
   const done = new Promise<void>((resolve, reject) => {
-    child = spawn(FFMPEG, plan.args, { windowsHide: true })
-    let err = ''
-    let buf = ''
-    child.stdout!.on('data', (d: Buffer) => {
-      buf += d.toString()
-      const lines = buf.split('\n')
-      buf = lines.pop() ?? ''
-      let speed = ''
-      for (const line of lines) {
-        const [k, v] = line.trim().split('=')
-        if (k === 'speed') speed = v
-        if (k === 'out_time_us') onProgress({ fraction: Math.min(1, Number(v) / plan.duration), speed })
-      }
-    })
-    child.stderr!.on('data', (d: Buffer) => (err = (err + d.toString()).slice(-6000)))
-    child.on('error', reject)
-    child.on('close', (code) => {
+    let settled = false
+    const finish = (err?: Error) => {
+      if (settled) return
+      settled = true
+      jobs.delete(jobId)
       rm(tmpDir, { recursive: true, force: true }).catch(() => undefined)
-      if (cancelled) reject(new Error('Exportación cancelada'))
+      if (err) reject(err)
+      else resolve()
+    }
+    jobs.set(jobId, { ffmpeg, frames: plan.frames, done: finish, onProgress, started: Date.now() })
+    ffmpeg.on('error', (e) => finish(e))
+    ffmpeg.stdin!.on('error', () => undefined)
+    ffmpeg.on('close', (code) => {
+      if (cancelled) finish(new Error('Exportación cancelada'))
       else if (code === 0) {
-        onProgress({ fraction: 1, speed: '' })
-        resolve()
-      } else reject(new Error(`ffmpeg falló (${code}):\n${err}`))
+        onProgress({ fraction: 1, fps: 0, eta: 0 })
+        finish()
+      } else finish(new Error(`ffmpeg falló (${code}):\n${stderr}`))
     })
   })
+
+  win.webContents.send('render:job', {
+    jobId,
+    project,
+    width: plan.width,
+    height: plan.height,
+    fps: plan.fps,
+    frames: plan.frames,
+    start: 0
+  })
+
   return {
     done,
     encoder,
     cancel() {
       cancelled = true
-      child?.kill()
+      win.webContents.send('render:cancel', jobId)
+      ffmpeg.kill()
     }
   }
 }

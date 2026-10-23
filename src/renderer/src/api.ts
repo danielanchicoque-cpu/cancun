@@ -45,9 +45,9 @@ export const api = {
   importLuts: (): Promise<LutEntry[]> => c().luts.import(),
   loadLut: (path: string): Promise<LoadedLut> => c().luts.load(path),
 
-  pickExport: (name: string): Promise<string | null> => c().exporter.pick(name),
+  pickExport: (name: string, format = 'mp4'): Promise<string | null> => c().exporter.pick(name, format),
   startExport: (p: Project, output: string): Promise<{ output: string; encoder: string }> => c().exporter.start(p, output),
   cancelExport: (): Promise<void> => c().exporter.cancel(),
-  onExportProgress: (cb: (p: { fraction: number; speed: string }) => void): (() => void) => c().exporter.onProgress(cb),
+  onExportProgress: (cb: (p: { fraction: number; fps: number; eta: number }) => void): (() => void) => c().exporter.onProgress(cb),
   reveal: (path: string): Promise<void> => c().reveal(path)
 }

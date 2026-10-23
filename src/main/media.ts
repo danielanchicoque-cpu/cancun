@@ -11,8 +11,14 @@ import { type Media, type MediaKind, US, newId } from '@shared/project'
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.tif', '.tiff'])
 const AUDIO_EXT = new Set(['.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.opus', '.wma'])
 
-export const FFMPEG = process.env.CANCUN_FFMPEG ?? 'ffmpeg'
-export const FFPROBE = process.env.CANCUN_FFPROBE ?? 'ffprobe'
+// FFmpeg propio de Cancun (7.0.x): es el último que habla con el driver NVIDIA de la
+// GTX 1060 para exportar por GPU. Si no está, se usa el del sistema.
+const vendored = (name: string) => {
+  const p = join(app.getAppPath(), 'vendor', 'ffmpeg', `${name}.exe`)
+  return existsSync(p) ? p : name
+}
+export const FFMPEG = process.env.CANCUN_FFMPEG ?? vendored('ffmpeg')
+export const FFPROBE = process.env.CANCUN_FFPROBE ?? vendored('ffprobe')
 
 export function run(cmd: string, args: string[]): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -118,4 +124,47 @@ export async function waveform(media: Media): Promise<number[]> {
   }
   await writeFile(out, JSON.stringify(peaks))
   return peaks
+}
+
+/** Versión invertida del video (para "Invertir"); se guarda en caché junto a las miniaturas. */
+export async function reverseMedia(path: string): Promise<string> {
+  await mkdir(cacheDir(), { recursive: true })
+  const out = join(cacheDir(), `${cacheKey(path)}-reverse.mp4`)
+  if (existsSync(out)) return out
+  const info = await probe(path)
+  const args = ['-y', '-v', 'error', '-i', path, '-vf', 'reverse', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16', '-pix_fmt', 'yuv420p']
+  if (info.hasAudio) args.push('-af', 'areverse', '-c:a', 'aac', '-b:a', '256k')
+  args.push(out)
+  await run(FFMPEG, args)
+  return out
+}
+
+export interface SoundEntry {
+  name: string
+  path: string
+  /** Carpeta dentro de la biblioteca (vacía = raíz). */
+  category: string
+}
+
+const AUDIO_FILE = /\.(mp3|wav|aac|m4a|flac|ogg|opus|wma)$/i
+
+/** Efectos de sonido de Daniel: todos los audios de la carpeta, con su subcarpeta como categoría. */
+export async function listSounds(root: string): Promise<SoundEntry[]> {
+  const { readdir } = await import('node:fs/promises')
+  const out: SoundEntry[] = []
+  async function walk(dir: string, category: string) {
+    let entries
+    try {
+      entries = await readdir(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const e of entries) {
+      const full = join(dir, e.name)
+      if (e.isDirectory()) await walk(full, category ? `${category} / ${e.name}` : e.name)
+      else if (AUDIO_FILE.test(e.name)) out.push({ name: e.name.replace(/\.[^.]+$/, ''), path: full, category })
+    }
+  }
+  await walk(root, '')
+  return out.sort((a, b) => a.category.localeCompare(b.category, 'es') || a.name.localeCompare(b.name, 'es'))
 }

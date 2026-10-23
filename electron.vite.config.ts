@@ -11,5 +11,11 @@ export default defineConfig({
     resolve: { alias: shared },
     build: { rollupOptions: { output: { format: 'cjs', entryFileNames: '[name].cjs' } } }
   },
-  renderer: { plugins: [react()], resolve: { alias: shared } }
+  renderer: {
+    plugins: [react()],
+    resolve: { alias: shared },
+    build: {
+      rollupOptions: { input: { index: resolve('src/renderer/index.html'), render: resolve('src/renderer/render.html') } }
+    }
+  }
 })

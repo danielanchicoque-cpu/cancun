@@ -35,7 +35,9 @@ export function summarize(p: Project) {
       clips: t.clips.map((c) =>
         c.type === 'text'
           ? { id: c.id, type: 'text', text: c.text, start: s(c.start), end: s(clipEnd(c)) }
-          : {
+          : c.type === 'effect'
+            ? { id: c.id, type: 'effect', effect: c.effect, start: s(c.start), end: s(clipEnd(c)) }
+            : {
               id: c.id,
               type: 'media',
               media: p.media[c.mediaId]?.name,

@@ -99,3 +99,64 @@ test('las operaciones no mutan el proyecto original', () => {
   applyOp(p, { op: 'addClip', mediaId: 'a' })
   assert.equal(JSON.stringify(p), before)
 })
+
+test('sin imán de la pista principal, el clip se queda donde se suelta', () => {
+  let p = run(base(), { op: 'setSettings', patch: { mainMagnet: false } }, { op: 'addClip', mediaId: 'a' }, { op: 'addClip', mediaId: 'b' })
+  const b = p.tracks[0].clips[1]
+  p = applyOp(p, { op: 'moveClip', clipId: b.id, start: 15 * US }).project
+  assert.equal(p.tracks[0].clips[1].start, 15 * US)
+  // Con imán vuelve a pegarse.
+  p = applyOp(p, { op: 'setSettings', patch: { mainMagnet: true } }).project
+  assert.equal(p.tracks[0].clips[1].start, 10 * US)
+})
+
+test('la vinculación mueve los clips de arriba con su clip principal', () => {
+  let p = run(base(), { op: 'addClip', mediaId: 'a' }, { op: 'addClip', mediaId: 'b' })
+  const [a, b] = p.tracks[0].clips
+  const r = applyOp(p, { op: 'addText', text: 'hola', start: 11 * US })
+  p = applyOp(r.project, { op: 'moveClip', clipId: b.id, start: 0 }).project
+  // b pasó al inicio (0..4s): el texto que estaba 1s dentro de b va a 1s.
+  const text = p.tracks.find((t) => t.kind === 'text')!.clips[0]
+  assert.equal(text.start, 1 * US)
+  assert.equal(p.tracks[0].clips[1].id, a.id)
+})
+
+test('keyframes: se interpolan y quitar el último fija el valor', async () => {
+  const { resolveClip } = await import('../src/shared/animate.ts')
+  const r = applyOp(base(), { op: 'addClip', mediaId: 'a' })
+  let p = applyOp(r.project, { op: 'setKeyframe', clipId: r.createdId!, prop: 'transform.scale', time: 0, value: 1, ease: 'linear' }).project
+  p = applyOp(p, { op: 'setKeyframe', clipId: r.createdId!, prop: 'transform.scale', time: 2 * US, value: 2, ease: 'linear' }).project
+  const clip = p.tracks[0].clips[0]
+  assert.equal(resolveClip(clip, 1 * US).transform.scale, 1.5)
+  p = applyOp(p, { op: 'removeKeyframe', clipId: clip.id, prop: 'transform.scale', time: 0 }).project
+  p = applyOp(p, { op: 'removeKeyframe', clipId: clip.id, prop: 'transform.scale', time: 2 * US }).project
+  assert.equal(p.tracks[0].clips[0].transform.scale, 2)
+})
+
+test('congelar cuadro inserta 3s y corre lo demás', () => {
+  const r = applyOp(base(), { op: 'addClip', mediaId: 'a' })
+  const p = applyOp(r.project, { op: 'freezeFrame', clipId: r.createdId!, at: 4 * US }).project
+  const clips = p.tracks[0].clips
+  assert.equal(clips.length, 3)
+  assert.ok(clips[1].type === 'media' && clips[1].freeze)
+  assert.equal(clips[2].start, 7 * US)
+})
+
+test('separar audio crea un clip de audio y silencia el video', () => {
+  const r = applyOp(base(), { op: 'addClip', mediaId: 'a' })
+  const q = applyOp(r.project, { op: 'separateAudio', clipId: r.createdId! })
+  const audioTrack = q.project.tracks.find((t) => t.kind === 'audio')!
+  assert.equal(audioTrack.clips[0].id, q.createdId)
+  const v = q.project.tracks[0].clips[0]
+  assert.equal(v.type === 'media' && v.volume, 0)
+})
+
+test('mover varios clips a la vez', () => {
+  let p = run(base(), { op: 'addTrack', kind: 'video' })
+  const t = p.tracks[1].id
+  const a = applyOp(p, { op: 'addClip', mediaId: 'b', trackId: t, start: 0 })
+  const b = applyOp(a.project, { op: 'addText', text: 'x', start: 1 * US })
+  p = applyOp(b.project, { op: 'moveClips', clipIds: [a.createdId!, b.createdId!], delta: 2 * US }).project
+  assert.equal(p.tracks[1].clips[0].start, 2 * US)
+  assert.equal(p.tracks.find((x) => x.kind === 'text')!.clips[0].start, 3 * US)
+})
