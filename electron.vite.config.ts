@@ -14,6 +14,8 @@ export default defineConfig({
   renderer: {
     plugins: [react()],
     resolve: { alias: shared },
+    // MediaPipe carga su WASM con importScripts: el worker debe ser clásico (iife).
+    worker: { format: 'iife' },
     build: {
       rollupOptions: { input: { index: resolve('src/renderer/index.html'), render: resolve('src/renderer/render.html') } }
     }

@@ -76,33 +76,33 @@ export async function probe(path: string): Promise<Media> {
   }
 }
 
-const FILMSTRIP_FRAMES = 40
 const FILMSTRIP_HEIGHT = 72
 
-/** Una sola imagen PNG con N cuadros en fila, para dibujar el clip en la línea de tiempo. */
-export async function filmstrip(media: Media): Promise<string> {
+export interface Filmstrip {
+  path: string
+  /** Cuadros en la tira (uno por intervalo igual de la duración). */
+  frames: number
+}
+
+/**
+ * Una imagen con N cuadros en fila (aprox. uno por segundo), para dibujar el clip en
+ * la línea de tiempo con cada cuadro en su proporción real.
+ */
+export async function filmstrip(media: Media): Promise<Filmstrip> {
   await mkdir(cacheDir(), { recursive: true })
-  const out = join(cacheDir(), `${cacheKey(media.path)}-strip.jpg`)
-  if (existsSync(out)) return out
+  const seconds = Math.max(media.duration / US, 0.1)
+  const frames = media.kind === 'image' ? 1 : Math.max(8, Math.min(200, Math.ceil(seconds)))
+  const out = join(cacheDir(), `${cacheKey(media.path)}-strip${frames}.jpg`)
+  if (existsSync(out)) return { path: out, frames }
   if (media.kind === 'image') {
     await run(FFMPEG, ['-y', '-v', 'error', '-i', media.path, '-vf', `scale=-2:${FILMSTRIP_HEIGHT}`, out])
-    return out
+    return { path: out, frames }
   }
-  const seconds = Math.max(media.duration / US, 0.1)
-  const rate = FILMSTRIP_FRAMES / seconds
-  await run(FFMPEG, [
-    '-y', '-v', 'error', '-skip_frame', 'nokey', '-i', media.path,
-    '-vf', `fps=${rate.toFixed(6)},scale=-2:${FILMSTRIP_HEIGHT},tile=${FILMSTRIP_FRAMES}x1`,
-    '-frames:v', '1', '-q:v', '5', out
-  ]).catch(() =>
-    // Algunos códecs no permiten saltar a cuadros clave; se decodifica todo.
-    run(FFMPEG, [
-      '-y', '-v', 'error', '-i', media.path,
-      '-vf', `fps=${rate.toFixed(6)},scale=-2:${FILMSTRIP_HEIGHT},tile=${FILMSTRIP_FRAMES}x1`,
-      '-frames:v', '1', '-q:v', '5', out
-    ])
+  const vf = `fps=${(frames / seconds).toFixed(6)},scale=-2:${FILMSTRIP_HEIGHT},tile=${frames}x1`
+  await run(FFMPEG, ['-y', '-v', 'error', '-hwaccel', 'auto', '-i', media.path, '-an', '-vf', vf, '-frames:v', '1', '-q:v', '5', out]).catch(() =>
+    run(FFMPEG, ['-y', '-v', 'error', '-i', media.path, '-an', '-vf', vf, '-frames:v', '1', '-q:v', '5', out])
   )
-  return out
+  return { path: out, frames }
 }
 
 const PEAKS_PER_SECOND = 100

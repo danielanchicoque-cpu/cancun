@@ -150,6 +150,7 @@ export class Player {
     Segmenter.get()
       .then((s) => {
         this.segmenter = s
+        s.onMask = () => (this.dirty = true)
         this.dirty = true
       })
       .catch((err) => console.error('Segmentación', err))
@@ -280,11 +281,8 @@ export class Player {
         sources.set(clip.id, slot.el)
         const ready = slot.el instanceof HTMLVideoElement ? slot.el.readyState >= 2 : slot.el.complete
         if (this.segmenter && ready && needsSegmentation(vis.clip)) {
-          try {
-            segs.set(clip.id, this.segmenter.segment(clip.id, slot.el))
-          } catch (err) {
-            console.error('Segmentación', err)
-          }
+          const mask = this.segmenter.request(clip.id, slot.el)
+          if (mask) segs.set(clip.id, mask)
         }
       }
     }

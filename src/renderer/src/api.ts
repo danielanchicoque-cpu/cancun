@@ -15,12 +15,31 @@ export interface LutEntry {
   thumb: string | null
 }
 
+export interface SoundEntry {
+  name: string
+  path: string
+  category: string
+}
+
 export interface LoadedLut {
   size: number
   domainMin: [number, number, number]
   domainMax: [number, number, number]
   title: string
   data: Float32Array
+}
+
+export interface ExportProgress {
+  fraction: number
+  fps: number
+  eta: number
+}
+
+export interface ChatEvent {
+  type: 'text' | 'tool' | 'done' | 'error' | 'start'
+  text?: string
+  tool?: string
+  error?: string
 }
 
 const c = () => window.cancun
@@ -36,9 +55,11 @@ export const api = {
 
   pickMedia: (): Promise<string[]> => c().media.pick(),
   probe: (paths: string[]): Promise<Media[]> => c().media.probe(paths),
-  filmstrip: (m: Media): Promise<string> => c().media.filmstrip(m),
+  filmstrip: (m: Media): Promise<{ path: string; frames: number }> => c().media.filmstrip(m),
   waveform: (m: Media): Promise<number[]> => c().media.waveform(m),
+  reverse: (path: string): Promise<string> => c().media.reverse(path),
   pathOf: (f: File): string => c().media.pathOf(f),
+  listSounds: (): Promise<SoundEntry[]> => c().sounds.list(),
 
   listLuts: (): Promise<LutEntry[]> => c().luts.list(),
   syncLuts: (): Promise<number> => c().luts.sync(),
@@ -48,6 +69,11 @@ export const api = {
   pickExport: (name: string, format = 'mp4'): Promise<string | null> => c().exporter.pick(name, format),
   startExport: (p: Project, output: string): Promise<{ output: string; encoder: string }> => c().exporter.start(p, output),
   cancelExport: (): Promise<void> => c().exporter.cancel(),
-  onExportProgress: (cb: (p: { fraction: number; fps: number; eta: number }) => void): (() => void) => c().exporter.onProgress(cb),
-  reveal: (path: string): Promise<void> => c().reveal(path)
+  onExportProgress: (cb: (p: ExportProgress) => void): (() => void) => c().exporter.onProgress(cb),
+  reveal: (path: string): Promise<void> => c().reveal(path),
+
+  chatSend: (text: string, context: unknown): Promise<void> => c().chat.send(text, context),
+  chatStop: (): Promise<void> => c().chat.stop(),
+  chatReset: (): Promise<void> => c().chat.reset(),
+  onChatEvent: (cb: (e: ChatEvent) => void): (() => void) => c().chat.onEvent(cb as never)
 }

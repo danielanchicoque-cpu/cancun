@@ -80,7 +80,7 @@ export async function renderJob(job: RenderJob, send: (data: Uint8Array, index: 
         const src = await provider.frameAt(f.source)
         if (!src) continue
         sources.set(f.clip.id, src)
-        if (segmenter && needsSegmentation(f.clip)) segs.set(f.clip.id, segmenter.segment(f.clip.id, src as TexImageSource))
+        if (segmenter && needsSegmentation(f.clip)) segs.set(f.clip.id, await segmenter.segmentNow(f.clip.id, src as TexImageSource))
       }
       lap('decode')
       comp.render(p, layers, sources, luts, segs)

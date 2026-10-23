@@ -1,81 +1,88 @@
-// Segmentación local con MediaPipe (modelo selfie multiclase, Apache 2.0). Corre en la
-// GPU del equipo, sin nube. Devuelve una máscara pequeña por cuadro:
-//   r = persona (para quitar el fondo y la luz), g = piel de cara y cuerpo (retoque).
-// El compositor la refina a resolución completa guiándose por la imagen.
+// Segmentación local con MediaPipe (modelo selfie multiclase, Apache 2.0), en un Worker
+// para no frenar la interfaz. La máscara (r = persona, g = piel) se usa para quitar el
+// fondo, la iluminación y el retoque; el compositor la refina a resolución completa.
 
-import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision'
 import { mediaUrl } from '../api'
 
-const SIZE = 256
-// Clases del modelo multiclase.
-const BACKGROUND = 0
-const BODY_SKIN = 2
-const FACE_SKIN = 3
-/** Suavizado temporal: cuánto pesa el cuadro nuevo (evita parpadeo en los bordes). */
-const TEMPORAL = 0.65
+const INPUT = 256
 
 let shared: Promise<Segmenter> | null = null
 
 export class Segmenter {
-  private last = new Map<string, Float32Array>()
-  private lastTs = 0
+  private worker: Worker
+  private nextId = 1
+  private waiting = new Map<number, (img: ImageData) => void>()
+  private latest = new Map<string, ImageData>()
+  private busy = new Set<string>()
+  /** Se llama cuando llega una máscara nueva (para repintar la vista previa). */
+  onMask: (() => void) | null = null
 
-  private constructor(private seg: ImageSegmenter) {}
+  private constructor(worker: Worker) {
+    this.worker = worker
+    worker.onmessage = (e: MessageEvent<{ type: string; id: number; key: string; w: number; h: number; data: Uint8ClampedArray }>) => {
+      const m = e.data
+      if (m.type !== 'mask') return
+      const img = new ImageData(new Uint8ClampedArray(m.data), m.w, m.h)
+      this.latest.set(m.key, img)
+      this.busy.delete(m.key)
+      this.waiting.get(m.id)?.(img)
+      this.waiting.delete(m.id)
+      this.onMask?.()
+    }
+  }
 
   static get(): Promise<Segmenter> {
     shared ??= (async () => {
       const root = (await window.cancun.paths.app()).replace(/\\/g, '/')
-      const fileset = await FilesetResolver.forVisionTasks(mediaUrl(`${root}/node_modules/@mediapipe/tasks-vision/wasm`))
-      const seg = await ImageSegmenter.createFromOptions(fileset, {
-        baseOptions: { modelAssetPath: mediaUrl(`${root}/resources/models/selfie_multiclass_256x256.tflite`), delegate: 'GPU' },
-        runningMode: 'VIDEO',
-        outputConfidenceMasks: true,
-        outputCategoryMask: false
+      const worker = new Worker(new URL('./segWorker.ts', import.meta.url), { type: 'classic' })
+      await new Promise<void>((resolve, reject) => {
+        worker.onmessage = (e: MessageEvent<{ type: string; error?: string }>) => {
+          if (e.data.type === 'ready') resolve()
+          else if (e.data.type === 'error') reject(new Error(e.data.error))
+        }
+        worker.postMessage({
+          type: 'init',
+          wasm: mediaUrl(`${root}/node_modules/@mediapipe/tasks-vision/wasm`),
+          model: mediaUrl(`${root}/resources/models/selfie_multiclass_256x256.tflite`)
+        })
       })
-      return new Segmenter(seg)
+      return new Segmenter(worker)
     })()
     shared.catch(() => (shared = null))
     return shared
   }
 
+  private async send(key: string, src: TexImageSource | ImageData, reset: boolean): Promise<ImageData> {
+    // Se reduce en la GPU antes de mandarlo: el modelo trabaja a 256×256.
+    const frame = await createImageBitmap(src as ImageBitmapSource, { resizeWidth: INPUT, resizeHeight: INPUT, resizeQuality: 'medium' })
+    const id = this.nextId++
+    return new Promise((resolve) => {
+      this.waiting.set(id, resolve)
+      this.worker.postMessage({ type: 'segment', id, key, frame, reset }, [frame])
+    })
+  }
+
   /**
-   * Máscara RGBA de 256×256 para la fuente. `key` identifica el clip para suavizar en el
-   * tiempo; `reset` descarta el historial (al saltar a otro punto).
+   * Vista previa: pide una máscara nueva si el worker está libre para este clip y
+   * devuelve la última disponible (puede ir un cuadro atrás, no se nota).
    */
-  segment(key: string, src: TexImageSource, reset = false): ImageData {
-    // MediaPipe exige marcas de tiempo crecientes.
-    this.lastTs = Math.max(this.lastTs + 1, Math.floor(performance.now()))
-    const result = this.seg.segmentForVideo(src, this.lastTs)
-    const masks = result.confidenceMasks ?? []
-    const bg = masks[BACKGROUND]?.getAsFloat32Array()
-    const body = masks[BODY_SKIN]?.getAsFloat32Array()
-    const face = masks[FACE_SKIN]?.getAsFloat32Array()
-    const w = masks[0]?.width ?? SIZE
-    const h = masks[0]?.height ?? SIZE
-    const n = w * h
-    const prev = reset ? undefined : this.last.get(key)
-    const cur = new Float32Array(n * 2)
-    const img = new ImageData(w, h)
-    for (let i = 0; i < n; i++) {
-      let person = bg ? 1 - bg[i] : 1
-      let skin = (body?.[i] ?? 0) + (face?.[i] ?? 0)
-      if (prev && prev.length === n * 2) {
-        person = prev[i * 2] + (person - prev[i * 2]) * TEMPORAL
-        skin = prev[i * 2 + 1] + (skin - prev[i * 2 + 1]) * TEMPORAL
-      }
-      cur[i * 2] = person
-      cur[i * 2 + 1] = skin
-      img.data[i * 4] = Math.round(Math.min(1, person) * 255)
-      img.data[i * 4 + 1] = Math.round(Math.min(1, skin) * 255)
-      img.data[i * 4 + 3] = 255
+  request(key: string, src: TexImageSource): ImageData | undefined {
+    if (!this.busy.has(key)) {
+      this.busy.add(key)
+      this.send(key, src, false).catch(() => this.busy.delete(key))
     }
-    for (const m of masks) m.close()
-    this.last.set(key, cur)
-    return img
+    return this.latest.get(key)
+  }
+
+  /** Exportación: la máscara exacta de este cuadro. */
+  segmentNow(key: string, src: TexImageSource | ImageData): Promise<ImageData> {
+    return this.send(key, src, false)
   }
 
   forget(key: string) {
-    this.last.delete(key)
+    this.latest.delete(key)
+    this.busy.delete(key)
+    this.worker.postMessage({ type: 'forget', key })
   }
 }
 

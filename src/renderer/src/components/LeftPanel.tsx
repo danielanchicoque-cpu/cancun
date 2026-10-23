@@ -1,18 +1,22 @@
-import { useEffect, useMemo, useState } from 'react'
-import type { Media, TextStyle, TransitionKind } from '@shared/project'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { Media } from '@shared/project'
 import { useEditor } from '../store'
-import { api, mediaUrl, type LutEntry } from '../api'
+import { api, mediaUrl, type LutEntry, type SoundEntry } from '../api'
 import { useFilmstrip } from '../assets'
 import { DEFAULT_TRANSITION_US, addToTimeline, applyTransition, importFiles, pickAndImport, targetClip, toast } from '../actions'
 import { shortTime } from '../format'
+import { EFFECTS } from '../gl/shaders'
+import { THUMB_FRAMES, thumbFrames, thumbStill } from '../gl/thumbnails'
+import { TEXT_PRESETS, TRANSITIONS } from './catalog'
 import { Icon, type IconName } from './icons'
 
-type Tab = 'media' | 'audio' | 'text' | 'transitions' | 'adjust'
+type Tab = 'media' | 'audio' | 'text' | 'effects' | 'transitions' | 'adjust'
 
 const TABS: { id: Tab; label: string; icon: IconName }[] = [
-  { id: 'media', label: 'Archivos multimedia', icon: 'media' },
+  { id: 'media', label: 'Multimedia', icon: 'media' },
   { id: 'audio', label: 'Audio', icon: 'audio' },
   { id: 'text', label: 'Texto', icon: 'text' },
+  { id: 'effects', label: 'Efectos', icon: 'effects' },
   { id: 'transitions', label: 'Transiciones', icon: 'transitions' },
   { id: 'adjust', label: 'Ajuste', icon: 'adjust' }
 ]
@@ -30,7 +34,11 @@ function useTuyos() {
   const [paths, setPaths] = useState(readTuyos)
   const toggle = (path: string) => {
     const next = paths.includes(path) ? paths.filter((p) => p !== path) : [path, ...paths]
-    localStorage.setItem(TUYOS_KEY, JSON.stringify(next))
+    try {
+      localStorage.setItem(TUYOS_KEY, JSON.stringify(next))
+    } catch {
+      /* sin almacenamiento local: vale solo para esta sesión */
+    }
     setPaths(next)
   }
   return { paths, toggle }
@@ -96,13 +104,36 @@ function MediaTile({ media, inProject, starred, onStar }: { media: Media; inProj
   )
 }
 
-function MediaBrowser({ kinds, importLabel }: { kinds: Media['kind'][]; importLabel: string }) {
+function useFileDrop() {
+  const [over, setOver] = useState(false)
+  return {
+    over,
+    props: {
+      onDragOver: (e: React.DragEvent) => {
+        if (e.dataTransfer.types.includes('Files')) {
+          e.preventDefault()
+          setOver(true)
+        }
+      },
+      onDragLeave: () => setOver(false),
+      onDrop: async (e: React.DragEvent) => {
+        if (!e.dataTransfer.types.includes('Files')) return
+        e.preventDefault()
+        setOver(false)
+        const paths = [...e.dataTransfer.files].map((f) => api.pathOf(f)).filter(Boolean)
+        if (paths.length) await importFiles(paths).catch((err) => toast(String(err), true))
+      }
+    }
+  }
+}
+
+function MediaBrowser() {
   const media = useEditor((s) => s.project!.media)
   const [section, setSection] = useState<'import' | 'tuyos'>('import')
-  const [over, setOver] = useState(false)
+  const drop = useFileDrop()
   const tuyos = useTuyos()
-  const tuyosMedia = useProbed(tuyos.paths).filter((m) => kinds.includes(m.kind))
-  const list = Object.values(media).filter((m) => kinds.includes(m.kind))
+  const tuyosMedia = useProbed(tuyos.paths).filter((m) => m.kind !== 'audio')
+  const list = Object.values(media).filter((m) => m.kind !== 'audio')
   const inProject = new Set(list.map((m) => m.path.toLowerCase()))
 
   return (
@@ -111,26 +142,11 @@ function MediaBrowser({ kinds, importLabel }: { kinds: Media['kind'][]; importLa
         <button className={section === 'import' ? 'active' : ''} onClick={() => setSection('import')}>Importar</button>
         <button className={section === 'tuyos' ? 'active' : ''} onClick={() => setSection('tuyos')}>Tuyos</button>
       </div>
-      <div
-        className="side-content"
-        onDragOver={(e) => {
-          if (e.dataTransfer.types.includes('Files')) {
-            e.preventDefault()
-            setOver(true)
-          }
-        }}
-        onDragLeave={() => setOver(false)}
-        onDrop={async (e) => {
-          e.preventDefault()
-          setOver(false)
-          const paths = [...e.dataTransfer.files].map((f) => api.pathOf(f)).filter(Boolean)
-          if (paths.length) await importFiles(paths).catch((err) => toast(String(err), true))
-        }}
-      >
+      <div className="side-content" {...drop.props}>
         {section === 'import' ? (
           <>
-            <div className={`drop-zone ${over ? 'over' : ''}`} onClick={() => pickAndImport().catch((err) => toast(String(err), true))}>
-              <Icon name="plus" /> {importLabel}
+            <div className={`drop-zone ${drop.over ? 'over' : ''}`} onClick={() => pickAndImport().catch((err) => toast(String(err), true))}>
+              <Icon name="plus" /> Importar
               <div className="hint">o arrastra archivos aquí</div>
             </div>
             <div className="asset-grid">
@@ -154,25 +170,145 @@ function MediaBrowser({ kinds, importLabel }: { kinds: Media['kind'][]; importLa
   )
 }
 
-const TEXT_PRESETS: { label: string; style: Partial<TextStyle>; sample: string }[] = [
-  { label: 'Texto predeterminado', style: {}, sample: 'Texto predeterminado' },
-  { label: 'Borde negro', style: { strokeWidth: 1, strokeColor: '#000000' }, sample: 'Borde negro' },
-  { label: 'Caja', style: { background: '#000000', color: '#ffffff', bold: true, size: 56 }, sample: 'Caja' },
-  { label: 'Amarillo', style: { color: '#ffd400', strokeWidth: 1, strokeColor: '#000000', size: 84 }, sample: 'Amarillo' },
-  { label: 'Título', style: { size: 120, bold: true, font: 'Impact' }, sample: 'TÍTULO' }
-]
+/** Un reproductor compartido para escuchar los sonidos antes de usarlos. */
+const previewAudio = new Audio()
+
+function SoundRow({ sound, playing, onPlay }: { sound: SoundEntry; playing: boolean; onPlay: () => void }) {
+  const add = async () => {
+    const [m] = await importFiles([sound.path])
+    if (m) addToTimeline(m, { start: useEditor.getState().time })
+  }
+  return (
+    <div
+      className={`sound-row ${playing ? 'playing' : ''}`}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('application/x-cancun-path', sound.path)
+        e.dataTransfer.effectAllowed = 'copy'
+      }}
+      onDoubleClick={add}
+      title={sound.path}
+    >
+      <button className="icon-btn" onClick={onPlay} title={playing ? 'Detener' : 'Escuchar'}>
+        <Icon name={playing ? 'stop' : 'play'} size={13} />
+      </button>
+      <span className="name">{sound.name}</span>
+      <button className="icon-btn add-btn" title="Agregar en el cursor" onClick={add}>
+        <Icon name="plus" size={13} />
+      </button>
+    </div>
+  )
+}
+
+function AudioBrowser() {
+  const media = useEditor((s) => s.project!.media)
+  const [section, setSection] = useState<'sounds' | 'import' | 'tuyos'>('sounds')
+  const [sounds, setSounds] = useState<SoundEntry[] | null>(null)
+  const [category, setCategory] = useState<string>('')
+  const [query, setQuery] = useState('')
+  const [playing, setPlaying] = useState<string | null>(null)
+  const drop = useFileDrop()
+  const tuyos = useTuyos()
+  const tuyosMedia = useProbed(tuyos.paths).filter((m) => m.kind === 'audio')
+  const list = Object.values(media).filter((m) => m.kind === 'audio')
+
+  useEffect(() => {
+    void api.listSounds().then(setSounds).catch(() => setSounds([]))
+    previewAudio.onended = () => setPlaying(null)
+    return () => previewAudio.pause()
+  }, [])
+
+  const categories = useMemo(() => [...new Set((sounds ?? []).map((s) => s.category.split(' / ')[0]))], [sounds])
+  const shown = (sounds ?? []).filter(
+    (s) => (!category || s.category.split(' / ')[0] === category) && (!query || `${s.name} ${s.category}`.toLowerCase().includes(query.toLowerCase()))
+  )
+
+  const play = (s: SoundEntry) => {
+    if (playing === s.path) {
+      previewAudio.pause()
+      setPlaying(null)
+      return
+    }
+    previewAudio.src = mediaUrl(s.path)
+    void previewAudio.play()
+    setPlaying(s.path)
+  }
+
+  return (
+    <div className="left-body">
+      <div className="side-nav">
+        <button className={section === 'sounds' ? 'active' : ''} onClick={() => setSection('sounds')}>Efectos de sonido</button>
+        <button className={section === 'import' ? 'active' : ''} onClick={() => setSection('import')}>Importar</button>
+        <button className={section === 'tuyos' ? 'active' : ''} onClick={() => setSection('tuyos')}>Tuyos</button>
+      </div>
+      <div className="side-content" {...drop.props}>
+        {section === 'sounds' && (
+          <>
+            <div className="search">
+              <Icon name="search" size={13} />
+              <input placeholder="Buscar sonido" value={query} onChange={(e) => setQuery(e.target.value)} />
+            </div>
+            <div className="chips">
+              <button className={!category ? 'active' : ''} onClick={() => setCategory('')}>Todos</button>
+              {categories.filter(Boolean).map((c) => (
+                <button key={c} className={category === c ? 'active' : ''} onClick={() => setCategory(c)}>
+                  {c}
+                </button>
+              ))}
+            </div>
+            {sounds === null && <div className="empty">Cargando tu biblioteca…</div>}
+            {sounds?.length === 0 && <div className="empty">No encontré la carpeta de efectos de sonido.</div>}
+            <div className="sound-list">
+              {shown.slice(0, 400).map((s) => (
+                <SoundRow key={s.path} sound={s} playing={playing === s.path} onPlay={() => play(s)} />
+              ))}
+            </div>
+          </>
+        )}
+        {section === 'import' && (
+          <>
+            <div className={`drop-zone ${drop.over ? 'over' : ''}`} onClick={() => pickAndImport().catch((err) => toast(String(err), true))}>
+              <Icon name="plus" /> Importar audio o música
+              <div className="hint">o arrastra archivos aquí</div>
+            </div>
+            <div className="asset-grid">
+              {list.map((m) => (
+                <MediaTile key={m.id} media={m} inProject starred={tuyos.paths.includes(m.path)} onStar={() => tuyos.toggle(m.path)} />
+              ))}
+            </div>
+          </>
+        )}
+        {section === 'tuyos' && (
+          <div className="asset-grid">
+            {tuyosMedia.length === 0 && <div className="empty">Marca con ★ los audios que quieras reutilizar.</div>}
+            {tuyosMedia.map((m) => (
+              <MediaTile key={m.path} media={m} inProject={Boolean(Object.values(media).find((x) => x.path === m.path))} starred onStar={() => tuyos.toggle(m.path)} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
 
 function TextBrowser() {
-  const add = (style: Partial<TextStyle>, sample: string) => {
+  const add = (p: (typeof TEXT_PRESETS)[number]) => {
     const s = useEditor.getState()
-    const [id] = s.dispatch({ op: 'addText', text: sample, start: s.time, style })
+    const [id] = s.dispatch({ op: 'addText', text: p.text, start: s.time, style: p.style })
     if (id) s.select(id)
   }
   return (
     <div className="side-content">
+      <div className="hint" style={{ marginBottom: 8 }}>Clic para agregar en el cursor, o arrástralo a la línea de tiempo.</div>
       <div className="asset-grid">
         {TEXT_PRESETS.map((p) => (
-          <div key={p.label} className="asset" onClick={() => add(p.style, p.sample)}>
+          <div
+            key={p.label}
+            className="asset"
+            draggable
+            onDragStart={(e) => e.dataTransfer.setData('application/x-cancun-text', JSON.stringify({ text: p.text, style: p.style }))}
+            onClick={() => add(p)}
+          >
             <div className="thumb" style={{ background: '#0c0c0d' }}>
               <span
                 style={{
@@ -185,7 +321,7 @@ function TextBrowser() {
                   fontSize: 15
                 }}
               >
-                {p.sample}
+                {p.text}
               </span>
             </div>
             <div className="label">{p.label}</div>
@@ -196,64 +332,88 @@ function TextBrowser() {
   )
 }
 
-export const TRANSITIONS: { kind: TransitionKind; label: string; anim: string }[] = [
-  { kind: 'fade', label: 'Fundido', anim: 'tr-fade' },
-  { kind: 'dissolve', label: 'Disolver', anim: 'tr-fade' },
-  { kind: 'fadeblack', label: 'Fundido a negro', anim: 'tr-black' },
-  { kind: 'fadewhite', label: 'Destello blanco', anim: 'tr-white' },
-  { kind: 'slideleft', label: 'Deslizar ←', anim: 'tr-slide-l' },
-  { kind: 'slideright', label: 'Deslizar →', anim: 'tr-slide-r' },
-  { kind: 'slideup', label: 'Deslizar ↑', anim: 'tr-slide-u' },
-  { kind: 'slidedown', label: 'Deslizar ↓', anim: 'tr-slide-d' },
-  { kind: 'wipeleft', label: 'Barrido ←', anim: 'tr-wipe-l' },
-  { kind: 'wiperight', label: 'Barrido →', anim: 'tr-wipe-r' },
-  { kind: 'smoothleft', label: 'Barrido suave', anim: 'tr-wipe-l' },
-  { kind: 'circleopen', label: 'Círculo abrir', anim: 'tr-circle' },
-  { kind: 'circleclose', label: 'Círculo cerrar', anim: 'tr-circle' },
-  { kind: 'zoomin', label: 'Acercar', anim: 'tr-zoom' },
-  { kind: 'radial', label: 'Radial', anim: 'tr-fade' },
-  { kind: 'pixelize', label: 'Pixelar', anim: 'tr-fade' }
-]
+/** Miniatura real (renderizada con el shader) que se anima al pasar el mouse. */
+function AnimatedThumb({ kind, id }: { kind: 'transition' | 'effect'; id: string }) {
+  const [frame, setFrame] = useState<string>(() => thumbStill(kind, id))
+  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const stop = () => {
+    if (timer.current) clearInterval(timer.current)
+    timer.current = null
+    setFrame(thumbStill(kind, id))
+  }
+  useEffect(() => stop, [])
+  return (
+    <div
+      className="thumb"
+      style={{ backgroundImage: `url("${frame}")`, backgroundSize: 'cover' }}
+      onPointerEnter={() => {
+        const frames = thumbFrames(kind, id)
+        let i = 0
+        timer.current = setInterval(() => setFrame(frames[i++ % THUMB_FRAMES]), 70)
+      }}
+      onPointerLeave={stop}
+    />
+  )
+}
 
 function TransitionBrowser() {
-  const apply = (kind: TransitionKind) => {
+  const [group, setGroup] = useState('')
+  const groups = [...new Set(TRANSITIONS.map((t) => t.group))]
+  const apply = (kind: (typeof TRANSITIONS)[number]['kind']) => {
     const p = useEditor.getState().project!
     const clip = targetClip(p)
     if (!clip) return toast('Selecciona un clip de la pista principal (o pon el cursor sobre uno)', true)
-    applyTransition(clip.id, { kind, duration: DEFAULT_TRANSITION_US })
+    applyTransition(clip.id, { kind, duration: clip.transition?.duration ?? DEFAULT_TRANSITION_US })
   }
   return (
     <div className="side-content">
-      <style>{`
-        .transition-tile:hover .tr-b { animation: var(--anim) 1.2s ease-in-out infinite alternate; }
-        .tr-b { opacity: 0; }
-        @keyframes tr-fade { from { opacity: 0 } to { opacity: 1 } }
-        @keyframes tr-black { 0% { opacity: 0; filter: brightness(0) } 50% { opacity: 1; filter: brightness(0) } 100% { opacity: 1; filter: none } }
-        @keyframes tr-white { 0% { opacity: 0; filter: brightness(4) } 50% { opacity: 1; filter: brightness(4) } 100% { opacity: 1; filter: none } }
-        @keyframes tr-slide-l { from { opacity: 1; transform: translateX(100%) } to { opacity: 1; transform: none } }
-        @keyframes tr-slide-r { from { opacity: 1; transform: translateX(-100%) } to { opacity: 1; transform: none } }
-        @keyframes tr-slide-u { from { opacity: 1; transform: translateY(100%) } to { opacity: 1; transform: none } }
-        @keyframes tr-slide-d { from { opacity: 1; transform: translateY(-100%) } to { opacity: 1; transform: none } }
-        @keyframes tr-wipe-l { from { opacity: 1; clip-path: inset(0 0 0 100%) } to { opacity: 1; clip-path: inset(0) } }
-        @keyframes tr-wipe-r { from { opacity: 1; clip-path: inset(0 100% 0 0) } to { opacity: 1; clip-path: inset(0) } }
-        @keyframes tr-circle { from { opacity: 1; clip-path: circle(0%) } to { opacity: 1; clip-path: circle(75%) } }
-        @keyframes tr-zoom { from { opacity: 0; transform: scale(1.6) } to { opacity: 1; transform: none } }
-      `}</style>
-      <div className="hint" style={{ marginBottom: 8 }}>Clic para aplicar al clip seleccionado, o arrástrala entre dos clips.</div>
+      <div className="chips">
+        <button className={!group ? 'active' : ''} onClick={() => setGroup('')}>Todas</button>
+        {groups.map((g) => (
+          <button key={g} className={group === g ? 'active' : ''} onClick={() => setGroup(g)}>
+            {g}
+          </button>
+        ))}
+      </div>
       <div className="asset-grid">
-        {TRANSITIONS.map((t) => (
+        {TRANSITIONS.filter((t) => !group || t.group === group).map((t) => (
           <div
             key={t.kind}
-            className="asset transition-tile"
+            className="asset"
             draggable
             onDragStart={(e) => e.dataTransfer.setData('application/x-cancun-transition', t.kind)}
             onClick={() => apply(t.kind)}
+            title="Clic: aplicar al clip seleccionado · Arrastrar: soltar entre dos clips"
           >
-            <div className="thumb" style={{ ['--anim' as string]: t.anim }}>
-              <div className="tr-a" />
-              <div className="tr-b" />
-            </div>
+            <AnimatedThumb kind="transition" id={t.kind} />
             <div className="label">{t.label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function EffectBrowser() {
+  const add = (id: string) => {
+    const s = useEditor.getState()
+    const [created] = s.dispatch({ op: 'addEffect', effect: id, start: s.time })
+    if (created) s.select(created)
+  }
+  return (
+    <div className="side-content">
+      <div className="hint" style={{ marginBottom: 8 }}>Los efectos van en su propia pista y afectan todo lo que tienen debajo.</div>
+      <div className="asset-grid">
+        {EFFECTS.map((e) => (
+          <div
+            key={e.id}
+            className="asset"
+            draggable
+            onDragStart={(ev) => ev.dataTransfer.setData('application/x-cancun-effect', e.id)}
+            onClick={() => add(e.id)}
+          >
+            <AnimatedThumb kind="effect" id={e.id} />
+            <div className="label">{e.label}</div>
           </div>
         ))}
       </div>
@@ -274,7 +434,7 @@ function LutBrowser() {
   const apply = (l: LutEntry) => {
     const s = useEditor.getState()
     const clip = targetClip(s.project!)
-    if (!clip) return toast('Selecciona un clip de video para aplicarle el LUT', true)
+    if (!clip) return toast('Selecciona un clip de video o arrastra el LUT encima de uno', true)
     const same = clip.color.lut?.path === l.path
     s.dispatch({ op: 'setLut', clipId: clip.id, lut: same ? null : { path: l.path, name: l.name, intensity: clip.color.lut?.intensity ?? 1 } })
   }
@@ -290,7 +450,14 @@ function LutBrowser() {
         </button>
         <div className="asset-grid">
           {luts.map((l) => (
-            <div key={l.path} className={`asset ${current === l.path ? 'selected' : ''}`} onClick={() => apply(l)} title={l.path}>
+            <div
+              key={l.path}
+              className={`asset ${current === l.path ? 'selected' : ''}`}
+              draggable
+              onDragStart={(e) => e.dataTransfer.setData('application/x-cancun-lut', JSON.stringify({ path: l.path, name: l.name }))}
+              onClick={() => apply(l)}
+              title={`${l.path}\nClic: aplicar al clip seleccionado · Arrastrar: soltar sobre un clip`}
+            >
               <div className="thumb lut-thumb" style={l.thumb ? { backgroundImage: `url("${mediaUrl(l.thumb)}")` } : undefined}>
                 {!l.thumb && <Icon name="adjust" size={22} />}
               </div>
@@ -311,13 +478,14 @@ export function LeftPanel() {
         {TABS.map((t) => (
           <button key={t.id} className={`tab-icon ${tab === t.id ? 'active' : ''}`} onClick={() => setTab(t.id)}>
             <Icon name={t.icon} />
-            <span>{t.label === 'Archivos multimedia' ? 'Multimedia' : t.label}</span>
+            <span>{t.label}</span>
           </button>
         ))}
       </div>
-      {tab === 'media' && <MediaBrowser kinds={['video', 'image']} importLabel="Importar" />}
-      {tab === 'audio' && <MediaBrowser kinds={['audio']} importLabel="Importar audio o música" />}
+      {tab === 'media' && <MediaBrowser />}
+      {tab === 'audio' && <AudioBrowser />}
       {tab === 'text' && <TextBrowser />}
+      {tab === 'effects' && <EffectBrowser />}
       {tab === 'transitions' && <TransitionBrowser />}
       {tab === 'adjust' && <LutBrowser />}
     </div>

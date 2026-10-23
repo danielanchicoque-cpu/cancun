@@ -65,6 +65,7 @@ export type Op =
   | { op: 'deleteClip'; clipId: Id }
   | { op: 'deleteClips'; clipIds: Id[] }
   | { op: 'duplicateClip'; clipId: Id }
+  | { op: 'pasteClips'; clips: Clip[]; at: number }
   | { op: 'separateAudio'; clipId: Id }
   | { op: 'freezeFrame'; clipId: Id; at: number; duration?: number }
   | { op: 'updateClip'; clipId: Id; patch: ClipPatch }
@@ -185,6 +186,11 @@ function withLinkage(p: Project, mutate: () => void) {
     }
     sortClips(t)
   }
+}
+
+/** Quita pistas vacías (menos la principal), como CapCut al mover o borrar clips. */
+function pruneEmpty(p: Project) {
+  p.tracks = p.tracks.filter((t, i) => i === 0 || t.clips.length > 0)
 }
 
 function overlaps(t: Track, start: number, end: number, ignore?: Set<Id>): boolean {
@@ -421,6 +427,7 @@ export function applyOp(project: Project, op: Op): OpResult {
       // Mover un clip principal arrastra sus clips vinculados.
       if (fromMain || toMainTrack) withLinkage(p, run)
       else run()
+      pruneEmpty(p)
       break
     }
 
@@ -443,6 +450,7 @@ export function applyOp(project: Project, op: Op): OpResult {
       }
       for (const t of p.tracks) sortClips(t)
       settleMain(p)
+      pruneEmpty(p)
       break
     }
 
@@ -495,6 +503,7 @@ export function applyOp(project: Project, op: Op): OpResult {
       }
       if (touchesMain) withLinkage(p, run)
       else run()
+      pruneEmpty(p)
       break
     }
 
@@ -518,6 +527,24 @@ export function applyOp(project: Project, op: Op): OpResult {
         for (const t of p.tracks) sortClips(t)
       }
       createdId = copy.id
+      break
+    }
+
+    case 'pasteClips': {
+      if (!op.clips.length) break
+      const first = Math.min(...op.clips.map((c) => c.start))
+      for (const src of op.clips) {
+        if (src.type === 'media' && !p.media[src.mediaId]) continue
+        const c = structuredClone(src)
+        c.id = newId()
+        c.start = Math.max(0, Math.round(op.at + (src.start - first)))
+        if (c.type === 'media') c.transition = null
+        const kind: TrackKind = c.type === 'text' ? 'text' : c.type === 'effect' ? 'effect' : p.media[c.mediaId].kind === 'audio' ? 'audio' : 'video'
+        const track = freeTrack(p, kind, c.start, clipEnd(c))
+        track.clips.push(c)
+        sortClips(track)
+        createdId = c.id
+      }
       break
     }
 

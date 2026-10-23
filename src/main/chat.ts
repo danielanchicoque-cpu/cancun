@@ -69,10 +69,11 @@ export function sendChat(text: string, ctx: ChatContext, cwd: string, emit: (e: 
   ]
   if (sessionId) args.push('--resume', sessionId)
   emit({ type: 'start' })
-  const proc = spawn(claudeExe(), args, { cwd, windowsHide: true, env: { ...process.env } })
+  const proc = spawn(claudeExe(), args, { cwd, windowsHide: true, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] })
   child = proc
   let buf = ''
   let err = ''
+  let shownText = false
   proc.stdout!.on('data', (d: Buffer) => {
     buf += d.toString()
     const lines = buf.split('\n')
@@ -89,11 +90,14 @@ export function sendChat(text: string, ctx: ChatContext, cwd: string, emit: (e: 
       if (msg.type === 'assistant') {
         const content = (msg.message as { content?: { type: string; text?: string; name?: string; input?: Record<string, unknown> }[] })?.content ?? []
         for (const block of content) {
-          if (block.type === 'text' && block.text) emit({ type: 'text', text: block.text })
+          if (block.type === 'text' && block.text) {
+            shownText = true
+            emit({ type: /not logged in/i.test(block.text) ? 'error' : 'text', text: friendly(block.text), error: friendly(block.text) })
+          }
           if (block.type === 'tool_use') emit({ type: 'tool', tool: toolLabel(block.name ?? '', block.input ?? {}) })
         }
-      } else if (msg.type === 'result' && msg.is_error) {
-        emit({ type: 'error', error: String(msg.result ?? 'Error') })
+      } else if (msg.type === 'result' && msg.is_error && !shownText) {
+        emit({ type: 'error', error: friendly(String(msg.result ?? 'Error')) })
       }
     }
   })
@@ -104,6 +108,12 @@ export function sendChat(text: string, ctx: ChatContext, cwd: string, emit: (e: 
     if (code && code !== 0 && err.trim()) emit({ type: 'error', error: err.trim() })
     emit({ type: 'done' })
   })
+}
+
+/** Mensajes de Claude Code que conviene explicar en español. */
+function friendly(text: string): string {
+  if (/not logged in/i.test(text)) return 'Claude Code no tiene sesión iniciada en este equipo. Abre una terminal, escribe  claude  y luego  /login  (una sola vez). Después el chat de Cancun funciona.'
+  return text
 }
 
 export function stopChat() {
