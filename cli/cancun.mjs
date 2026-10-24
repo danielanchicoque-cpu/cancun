@@ -12,7 +12,7 @@ const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const INFO = join(process.env.APPDATA ?? '', 'Cancun', 'bridge.json')
 const US = 1_000_000
 // Campos de las operaciones que son tiempos (se convierten de segundos a µs).
-const TIME_FIELDS = new Set(['start', 'duration', 'sourceIn', 'time', 'at', 'fadeIn', 'fadeOut', 'delta'])
+const TIME_FIELDS = new Set(['start', 'end', 'duration', 'sourceIn', 'time', 'at', 'fadeIn', 'fadeOut', 'delta'])
 
 const HELP = `cancun — controla el editor Cancun desde la terminal (tiempos en segundos)
 
@@ -37,6 +37,8 @@ Editar (se ve en vivo; Ctrl+Z en la app deshace el lote completo)
   cancun ops                          referencia de operaciones
   cancun undo | redo
   cancun seek <seg> | play | pause | select <clipId>
+  cancun subtitles [--lang es|en|pt|auto]   transcribe la voz (clips elegidos o pista principal)
+                                      y crea los subtítulos en la pista "Subtítulos" (local, con GPU)
 
 Exportar
   cancun export <salida.mp4>          exporta con la configuración del proyecto`
@@ -88,6 +90,9 @@ Keyframes (props: transform.x|y|scale|scaleY|rotation|opacity, volume, color.lut
 {"op":"setKeyframe","clipId":ID,"prop":"transform.scale","time":s,"value":1.4,"ease?":"linear|easeIn|easeOut|easeInOut|hold"}
 {"op":"removeKeyframe","clipId":ID,"prop":"transform.scale","time":s}
 {"op":"clearKeyframes","clipId":ID,"prop?":"transform.scale"}
+
+Subtítulos (reemplaza los de la pista "Subtítulos"; tiempos en segundos de la línea de tiempo)
+{"op":"addSubtitles","segments":[{"start":0,"end":2.4,"text":"Hola"}],"style?":{"size":54}}
 
 Proyecto
 {"op":"setSettings","patch":{"mainMagnet":true,"snap":true,"linkage":true}}
@@ -267,6 +272,8 @@ async function main() {
       writeFileSync(out, Buffer.from(png.split(',')[1], 'base64'))
       return print(out)
     }
+    case 'subtitles':
+      return print(await call('subtitles', { lang: flag(args, 'lang', 'es') }))
     case 'export': {
       const out = resolve(args[0] ?? 'export.mp4')
       return print(await call('export', { output: out }))

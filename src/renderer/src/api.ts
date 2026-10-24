@@ -1,6 +1,7 @@
 // Envoltura tipada del puente expuesto por el preload.
 
 import type { Media, Project } from '@shared/project'
+import type { SubtitleJob, TimedText } from '@shared/subtitles'
 
 export interface ProjectSummary {
   id: string
@@ -42,6 +43,12 @@ export interface ChatEvent {
   error?: string
 }
 
+export interface SubtitleProgress {
+  stage: 'download-engine' | 'download-model' | 'transcribe'
+  fraction: number
+  label: string
+}
+
 const c = () => window.cancun
 
 /** URL que el reproductor puede leer para un archivo local. */
@@ -71,6 +78,9 @@ export const api = {
   cancelExport: (): Promise<void> => c().exporter.cancel(),
   onExportProgress: (cb: (p: ExportProgress) => void): (() => void) => c().exporter.onProgress(cb),
   reveal: (path: string): Promise<void> => c().reveal(path),
+
+  transcribe: (jobs: SubtitleJob[], lang: string): Promise<TimedText[]> => c().subtitles.run(jobs, lang),
+  onSubtitleProgress: (cb: (p: SubtitleProgress) => void): (() => void) => c().subtitles.onProgress(cb as never),
 
   chatSend: (text: string, context: unknown): Promise<void> => c().chat.send(text, context),
   chatStop: (): Promise<void> => c().chat.stop(),

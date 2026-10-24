@@ -157,3 +157,10 @@
 .topbar .logo { background: linear-gradient(90deg, #1fe0f0, #7a5cff); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .clip.adjust { background-color: #9a7420; }
 .hover-line { position: absolute; top: 0; bottom: 0; width: 1px; background: #f2c94c; z-index: 7; pointer-events: none; box-shadow: 0 0 4px #f2c94c88; }
+
+/* Subtítulos automáticos */
+.subs-panel { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px; }
+.subs-title { font-weight: 600; font-size: 13px; }
+.subs-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
+.subs-row select { flex: 1; max-width: 160px; }
+.subs-go { justify-content: center; padding: 8px 10px; }

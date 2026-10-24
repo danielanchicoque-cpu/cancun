@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Media } from '@shared/project'
 import { useEditor } from '../store'
-import { api, mediaUrl, type LutEntry, type SoundEntry } from '../api'
+import { api, mediaUrl, type LutEntry, type SoundEntry, type SubtitleProgress } from '../api'
 import { useFilmstrip } from '../assets'
-import { DEFAULT_TRANSITION_US, addToTimeline, applyTransition, importFiles, pickAndImport, targetClip, toast } from '../actions'
+import { DEFAULT_TRANSITION_US, addToTimeline, autoSubtitles, applyTransition, importFiles, pickAndImport, targetClip, toast } from '../actions'
 import { shortTime } from '../format'
 import { EFFECTS } from '../gl/shaders'
 import { THUMB_FRAMES, loadSamples, lutThumb, samplesReady, thumbFrames, thumbStill } from '../gl/thumbnails'
@@ -37,12 +37,13 @@ function LutThumb({ lut }: { lut: LutEntry }) {
 import { TEXT_PRESETS, TRANSITIONS } from './catalog'
 import { Icon, type IconName } from './icons'
 
-type Tab = 'media' | 'audio' | 'text' | 'effects' | 'transitions' | 'adjust'
+type Tab = 'media' | 'audio' | 'text' | 'subs' | 'effects' | 'transitions' | 'adjust'
 
 const TABS: { id: Tab; label: string; icon: IconName }[] = [
   { id: 'media', label: 'Multimedia', icon: 'media' },
   { id: 'audio', label: 'Audio', icon: 'audio' },
   { id: 'text', label: 'Texto', icon: 'text' },
+  { id: 'subs', label: 'Subtítulos', icon: 'captions' },
   { id: 'effects', label: 'Efectos', icon: 'effects' },
   { id: 'transitions', label: 'Transiciones', icon: 'transitions' },
   { id: 'adjust', label: 'Ajuste', icon: 'adjust' }
@@ -318,6 +319,73 @@ function AudioBrowser() {
   )
 }
 
+const LANGS = [
+  { code: 'es', label: 'Español' },
+  { code: 'en', label: 'Inglés' },
+  { code: 'pt', label: 'Portugués' },
+  { code: 'auto', label: 'Detectar' }
+]
+
+function SubtitleBrowser() {
+  const [lang, setLang] = useState(() => localStorage.getItem('cancun.subsLang') ?? 'es')
+  const [progress, setProgress] = useState<SubtitleProgress | null>(null)
+  // ¿Hay algún clip de video/audio elegido? Entonces solo se transcriben esos.
+  const selected = useEditor((s) => !!s.project && s.project.tracks.some((t) => t.clips.some((c) => c.type === 'media' && s.selection.includes(c.id))))
+  useEffect(() => api.onSubtitleProgress(setProgress), [])
+  const run = async () => {
+    setProgress({ stage: 'transcribe', fraction: 0, label: 'Preparando…' })
+    try {
+      const n = await autoSubtitles(lang)
+      toast(`${n} subtítulo${n === 1 ? '' : 's'} en la pista "Subtítulos"`)
+    } catch (err) {
+      toast(err instanceof Error ? err.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(err), true)
+    } finally {
+      setProgress(null)
+    }
+  }
+  return (
+    <div className="side-content">
+      <div className="subs-panel">
+        <div className="subs-title">Subtítulos automáticos</div>
+        <div className="hint">
+          Reconoce la voz {selected ? 'de los clips seleccionados' : 'de la pista principal'} y crea los subtítulos en una pista propia. Todo se hace en tu PC.
+        </div>
+        <label className="subs-row">
+          Idioma
+          <select
+            value={lang}
+            disabled={!!progress}
+            onChange={(e) => {
+              setLang(e.target.value)
+              localStorage.setItem('cancun.subsLang', e.target.value)
+            }}
+          >
+            {LANGS.map((l) => (
+              <option key={l.code} value={l.code}>
+                {l.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <button className="btn primary subs-go" disabled={!!progress} onClick={() => void run()}>
+          <Icon name="captions" size={14} /> {progress ? 'Generando…' : 'Generar subtítulos'}
+        </button>
+        {progress && (
+          <>
+            <div className="progress">
+              <div style={{ width: `${Math.round(progress.fraction * 100)}%` }} />
+            </div>
+            <div className="hint">{progress.label}</div>
+          </>
+        )}
+        <div className="hint" style={{ marginTop: 10 }}>
+          La primera vez se descarga el motor de voz (entre 0,6 y 1,2 GB, una sola vez). Si vuelves a generar, se reemplazan los de la pista "Subtítulos". Cada línea se edita como un texto normal.
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TextBrowser() {
   const add = (p: (typeof TEXT_PRESETS)[number]) => {
     const s = useEditor.getState()
@@ -536,6 +604,7 @@ export function LeftPanel() {
       {tab === 'media' && <MediaBrowser />}
       {tab === 'audio' && <AudioBrowser />}
       {tab === 'text' && <TextBrowser />}
+      {tab === 'subs' && <SubtitleBrowser />}
       {tab === 'effects' && <EffectBrowser />}
       {tab === 'transitions' && <TransitionBrowser />}
       {tab === 'adjust' && <LutBrowser />}

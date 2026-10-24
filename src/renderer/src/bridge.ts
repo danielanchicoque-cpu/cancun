@@ -6,7 +6,7 @@ import type { Op } from '@shared/ops'
 import { type Project, US, clipEnd, newProject, projectDuration } from '@shared/project'
 import { useEditor } from './store'
 import { api } from './api'
-import { addToTimeline, importFiles, toast } from './actions'
+import { addToTimeline, autoSubtitles, importFiles, toast } from './actions'
 import { getPlayer } from './components/Preview'
 
 function requireProject(): Project {
@@ -117,6 +117,12 @@ async function handle(method: string, params: Record<string, unknown>): Promise<
       await api.saveProject(p)
       st.open(p)
       return { id: p.id, name: p.name }
+    }
+    case 'subtitles': {
+      requireProject()
+      const count = await autoSubtitles(String(params.lang ?? 'es'))
+      toast(`Claude generó ${count} subtítulos`)
+      return { count, track: 'Subtítulos' }
     }
     case 'export': {
       const p = requireProject()

@@ -1,7 +1,7 @@
 // Prueba de interfaz: maneja la ventana de Cancun con eventos reales de mouse y
 // teclado por el protocolo de depuración de Chromium (abrir Cancun con
 // --remote-debugging-port=9333). Uso: node scripts/ui.mjs <pasos.json>
-// Cada paso: {"shot": "archivo.png"} | {"click": [x,y], "mods"?: 2} | {"drag": [[x,y],[x,y]]}
+// Cada paso: {"shot": "archivo.png"} | {"click": [x,y], "mods"?: 2} | {"move": [x,y]} | {"drag": [[x,y],[x,y]]}
 //            {"key": "Delete", "code"?: "Delete", "mods"?: 0} | {"wait": ms} | {"eval": "expresión"}
 
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -39,6 +39,8 @@ for (const s of steps) {
     const r = await send('Page.captureScreenshot', { format: 'png' })
     writeFileSync(s.shot, Buffer.from(r.result.data, 'base64'))
     console.log('captura', s.shot)
+  } else if (s.move) {
+    await mouse('mouseMoved', s.move[0], s.move[1], { button: 'none' })
   } else if (s.click) {
     const [x, y] = s.click
     await mouse('mouseMoved', x, y, { button: 'none' })

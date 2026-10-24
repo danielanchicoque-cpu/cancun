@@ -10,6 +10,7 @@ import { closeDecode, nextFrame, openDecode } from './decodeFallback'
 import { registerRenderIpc, startExport, type ExportJob } from './exporter'
 import { importLuts, listLuts, loadLut, syncFromCapCut } from './luts'
 import { filmstrip, listSounds, probe, reverseMedia, unpackedRoot, waveform } from './media'
+import { transcribeJobs } from './subtitles'
 import { deleteProject, listProjects, loadProject, saveProject } from './projectStore'
 
 // Esquema propio para que el reproductor lea archivos locales con saltos (Range),
@@ -53,6 +54,7 @@ function serveMedia(request: Request): Response {
   })
 }
 
+let subtitling = false
 const here = dirname(fileURLToPath(import.meta.url))
 const preloadPath = join(here, '../preload/index.cjs')
 const rendererDir = join(here, '../renderer')
@@ -68,7 +70,7 @@ let nextReq = 1
 const pending = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>()
 
 /** Métodos que pueden tardar mucho (no se cortan por tiempo). */
-const LONG_METHODS = new Set(['export'])
+const LONG_METHODS = new Set(['subtitles', 'export'])
 
 function callRenderer(method: string, params: Record<string, unknown>): Promise<unknown> {
   if (!win) return Promise.reject(new Error('Cancun no tiene ninguna ventana abierta'))
@@ -140,6 +142,15 @@ function registerIpc() {
   ipcMain.handle('chat:send', (_e, text: string, ctx: ChatContext) =>
     sendChat(text, ctx, app.getAppPath(), (ev) => win?.webContents.send('chat:event', ev))
   )
+  ipcMain.handle('subtitles:run', async (_e, jobs, lang: string) => {
+    if (subtitling) throw new Error('Ya se están generando subtítulos')
+    subtitling = true
+    try {
+      return await transcribeJobs(jobs, lang, (p) => win?.webContents.send('subtitles:progress', p))
+    } finally {
+      subtitling = false
+    }
+  })
   ipcMain.handle('chat:stop', () => stopChat())
   ipcMain.handle('chat:reset', () => resetChat())
   registerRenderIpc()

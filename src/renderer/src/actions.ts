@@ -2,6 +2,7 @@
 
 import { type Clip, type Media, type MediaClip, type Project, type Transition, US, clipEnd, findClip } from '@shared/project'
 import type { Op } from '@shared/ops'
+import { subtitleJobs } from '@shared/subtitles'
 import { api } from './api'
 import { primarySelection, useEditor } from './store'
 
@@ -164,6 +165,21 @@ export function applyTransition(clipId: string, transition: Transition | null) {
 }
 
 export const DEFAULT_TRANSITION_US = 0.5 * US
+
+/**
+ * Transcribe la voz (clips elegidos o la pista principal) y pone los subtítulos en la
+ * pista "Subtítulos". Devuelve cuántos se crearon.
+ */
+export async function autoSubtitles(lang = 'es'): Promise<number> {
+  const p = ed().project
+  if (!p) throw new Error('No hay ningún proyecto abierto')
+  const jobs = subtitleJobs(p, ed().selection)
+  if (!jobs.length) throw new Error('No hay clips con audio para transcribir')
+  const segments = await api.transcribe(jobs, lang)
+  if (!segments.length) throw new Error('No se detectó voz en el audio')
+  ed().dispatch({ op: 'addSubtitles', segments })
+  return segments.length
+}
 
 // --- Avisos ---------------------------------------------------------------------------
 type ToastListener = (msg: string | null, error: boolean) => void

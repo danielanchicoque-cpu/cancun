@@ -77,6 +77,8 @@ export type Op =
   | { op: 'setKeyframe'; clipId: Id; prop: KeyProp; time: number; value?: number; ease?: Easing }
   | { op: 'removeKeyframe'; clipId: Id; prop: KeyProp; time: number }
   | { op: 'clearKeyframes'; clipId: Id; prop?: KeyProp }
+  /** Subtítulos (tiempos de la línea de tiempo) en la pista "Subtítulos"; reemplaza los que ya había ahí. */
+  | { op: 'addSubtitles'; segments: { start: number; end: number; text: string }[]; style?: Partial<TextStyle> }
 
 export interface OpResult {
   project: Project
@@ -89,6 +91,8 @@ export class OpError extends Error {}
 const MIN_CLIP = Math.round(US / 30)
 const IMAGE_DEFAULT = 5 * US
 const TEXT_DEFAULT = 3 * US
+export const SUBTITLE_TRACK = 'Subtítulos'
+const SUBTITLE_STYLE: Partial<TextStyle> = { size: 54, bold: true, strokeWidth: 0.6, strokeColor: '#000000' }
 const EFFECT_DEFAULT = 3 * US
 const FREEZE_DEFAULT = 3 * US
 /** Dos keyframes a menos de esto se consideran el mismo (medio cuadro a 60 fps). */
@@ -389,6 +393,29 @@ export function applyOp(project: Project, op: Op): OpResult {
       track.clips.push(clip)
       sortClips(track)
       createdId = clip.id
+      break
+    }
+
+    case 'addSubtitles': {
+      let track = p.tracks.find((t) => t.kind === 'text' && t.name === SUBTITLE_TRACK)
+      if (track) track.clips = []
+      else track = addTrack(p, 'text', SUBTITLE_TRACK)
+      for (const seg of op.segments) {
+        const start = Math.max(0, Math.round(seg.start))
+        const duration = Math.max(MIN_CLIP, Math.round(seg.end) - start)
+        track.clips.push({
+          id: newId(),
+          type: 'text',
+          start,
+          duration,
+          text: seg.text,
+          style: { ...defaultTextStyle(), ...SUBTITLE_STYLE, ...op.style },
+          ...clipBase(),
+          transform: { ...defaultTransform(), y: 0.62 }
+        })
+      }
+      sortClips(track)
+      createdId = track.id
       break
     }
 

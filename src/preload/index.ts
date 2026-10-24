@@ -75,6 +75,10 @@ const api = {
     cancel: () => invoke('export:cancel'),
     onProgress: (cb: (p: { fraction: number; fps: number; eta: number }) => void) => listen('export:progress', cb)
   },
+  subtitles: {
+    run: (jobs: unknown, lang: string) => invoke('subtitles:run', jobs, lang),
+    onProgress: (cb: (p: { stage: string; fraction: number; label: string }) => void) => listen('subtitles:progress', cb)
+  },
   chat: {
     send: (text: string, context: unknown) => invoke('chat:send', text, context),
     stop: () => invoke('chat:stop'),

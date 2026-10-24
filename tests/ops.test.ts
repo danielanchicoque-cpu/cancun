@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { applyOp, type Op } from '../src/shared/ops.ts'
+import { subtitleJobs, toTimeline } from '../src/shared/subtitles.ts'
 import { type Media, type Project, US, newProject, projectDuration } from '../src/shared/project.ts'
 
 const video = (id: string, seconds: number): Media => ({
@@ -159,4 +160,32 @@ test('mover varios clips a la vez', () => {
   p = applyOp(b.project, { op: 'moveClips', clipIds: [a.createdId!, b.createdId!], delta: 2 * US }).project
   assert.equal(p.tracks[1].clips[0].start, 2 * US)
   assert.equal(p.tracks.find((x) => x.kind === 'text')!.clips[0].start, 3 * US)
+})
+
+test('subtítulos: tramos de la pista principal y tiempos con velocidad', () => {
+  let p = run(base(), { op: 'addClip', mediaId: 'a', sourceIn: 2 * US, duration: 4 * US }, { op: 'addClip', mediaId: 'b' })
+  const second = p.tracks[0].clips[1]
+  p = run(p, { op: 'updateClip', clipId: second.id, patch: { speed: 2 } })
+  const jobs = subtitleJobs(p)
+  assert.equal(jobs.length, 2)
+  assert.equal(jobs[0].sourceIn, 2 * US)
+  assert.equal(jobs[0].sourceDur, 4 * US)
+  // A velocidad 2, el segundo 1 de la fuente cae medio segundo después del inicio del clip.
+  const [seg] = toTimeline(jobs[1], [{ start: 1 * US, end: 2 * US, text: 'hola' }])
+  assert.equal(seg.start, jobs[1].start + 0.5 * US)
+  assert.equal(seg.end, jobs[1].start + 1 * US)
+})
+
+test('addSubtitles crea la pista "Subtítulos" y la reemplaza al regenerar', () => {
+  let p = run(base(), { op: 'addClip', mediaId: 'a' })
+  const segs = [
+    { start: 0, end: 1 * US, text: 'uno' },
+    { start: 1 * US, end: 2 * US, text: 'dos' }
+  ]
+  p = run(p, { op: 'addSubtitles', segments: segs })
+  p = run(p, { op: 'addSubtitles', segments: segs.slice(0, 1) })
+  const tracks = p.tracks.filter((t) => t.name === 'Subtítulos')
+  assert.equal(tracks.length, 1)
+  assert.equal(tracks[0].clips.length, 1)
+  assert.equal(tracks[0].clips[0].type === 'text' && tracks[0].clips[0].text, 'uno')
 })
