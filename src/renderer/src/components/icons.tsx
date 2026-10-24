@@ -29,6 +29,7 @@ const paths: Record<string, string> = {
   folder: 'M3 6h6l2 2h10v11H3z',
   close: 'M6 6l12 12M18 6L6 18',
   live: 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM6 6a8.5 8.5 0 0 0 0 12M18 6a8.5 8.5 0 0 1 0 12',
+  skim: 'M12 3v18M8 7l4-4 4 4M5 12h3M16 12h3',
   trimLeft: 'M14 4v16M5 8l4 4-4 4M18 6h2v12h-2',
   trimRight: 'M10 4v16M19 8l-4 4 4 4M6 6H4v12h2',
   duplicate: 'M8 8h12v12H8zM4 16V4h12',

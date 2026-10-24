@@ -126,8 +126,13 @@ export class Player {
       if (l.kind === 'clip') visible.add(l.frame.clip.id)
       else if (l.kind === 'transition') visible.add(l.a.clip.id).add(l.b.clip.id)
     }
-    return [...this.slots.values()].some(
-      (s) => visible.has(s.clipId) && s.el instanceof HTMLVideoElement && (s.el.seeking || s.el.readyState < 2)
+    const waitingMask = [...visible].some((id) => {
+      const c = p.tracks.flatMap((t) => t.clips).find((x) => x.id === id)
+      return c?.type === 'media' && needsSegmentation(c) && (!this.segmenter || !this.segmenter.has(id))
+    })
+    return (
+      waitingMask ||
+      [...this.slots.values()].some((s) => visible.has(s.clipId) && s.el instanceof HTMLVideoElement && (s.el.seeking || s.el.readyState < 2))
     )
   }
 

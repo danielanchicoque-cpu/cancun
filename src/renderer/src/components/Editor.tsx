@@ -128,7 +128,8 @@ export function Editor() {
         <button className="icon-btn" title="Volver a los proyectos" onClick={() => useEditor.getState().close()}>
           <Icon name="back" />
         </button>
-        <span className="logo">Cancun</span>
+        <img src="./mark.png" alt="" className="top-mark" />
+        <span className="logo">Cancún</span>
         <div className="layout-switch">
           <button className={layout === 'default' ? 'active' : ''} title="Vista horizontal" onClick={() => useEditor.getState().setLayout('default')}>
             <Icon name="layout" size={15} />

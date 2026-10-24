@@ -6,6 +6,19 @@ import { app, BrowserWindow, ipcMain } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { createServer } from 'node:net'
+
+/** Un puerto libre en 127.0.0.1. */
+function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer()
+    srv.once('error', reject)
+    srv.listen(0, '127.0.0.1', () => {
+      const port = (srv.address() as { port: number }).port
+      srv.close(() => resolve(port))
+    })
+  })
+}
 import { buildExport } from '@shared/exportGraph'
 import type { Project } from '@shared/project'
 import { FFMPEG, run } from './media'
@@ -102,6 +115,13 @@ export function registerRenderIpc() {
     const fps = (index + 1) / Math.max(elapsed, 0.001)
     job.onProgress({ fraction: (index + 1) / job.frames, fps, eta: (job.frames - index - 1) / Math.max(fps, 0.001) })
   })
+  ipcMain.on('render:progress', (_e, jobId: number, index: number) => {
+    const job = jobs.get(jobId)
+    if (!job) return
+    const elapsed = (Date.now() - job.started) / 1000
+    const fps = (index + 1) / Math.max(elapsed, 0.001)
+    job.onProgress({ fraction: (index + 1) / job.frames, fps, eta: (job.frames - index - 1) / Math.max(fps, 0.001) })
+  })
   ipcMain.on('render:done', (_e, jobId: number) => jobs.get(jobId)?.ffmpeg.stdin?.end())
   ipcMain.on('render:fail', (_e, jobId: number, error: string) => {
     const job = jobs.get(jobId)
@@ -126,7 +146,8 @@ export async function startExport(
   const encoder = await pickEncoder(project.export.codec, project.export.hardware)
   const tmpDir = await mkdtemp(join(app.getPath('temp'), 'cancun-export-'))
   const filterPath = join(tmpDir, 'audio.txt').replace(/\\/g, '/')
-  const plan = buildExport(project, { output, encoder, filterPath })
+  const sinkPort = await freePort()
+  const plan = buildExport(project, { output, encoder, filterPath, input: `tcp://127.0.0.1:${sinkPort}?listen=1` })
   if (plan.filter) await writeFile(filterPath, plan.filter, 'utf8')
 
   const win = await renderWindow(window.preload, window.rendererUrl, window.rendererDir)
@@ -165,7 +186,8 @@ export async function startExport(
     height: plan.height,
     fps: plan.fps,
     frames: plan.frames,
-    start: 0
+    start: 0,
+    sinkPort
   })
 
   return {

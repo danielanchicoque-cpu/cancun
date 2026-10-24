@@ -11,22 +11,27 @@ let shared: Promise<Segmenter> | null = null
 export class Segmenter {
   private worker: Worker
   private nextId = 1
-  private waiting = new Map<number, (img: ImageData) => void>()
-  private latest = new Map<string, ImageData>()
+  private waiting = new Map<number, (img: ImageBitmap) => void>()
+  private latest = new Map<string, ImageBitmap>()
   private busy = new Set<string>()
   /** Se llama cuando llega una máscara nueva (para repintar la vista previa). */
   onMask: (() => void) | null = null
 
   private constructor(worker: Worker) {
     this.worker = worker
-    worker.onmessage = (e: MessageEvent<{ type: string; id: number; key: string; w: number; h: number; data: Uint8ClampedArray }>) => {
+    worker.onmessage = (e: MessageEvent<{ type: string; id: number; key: string; bitmap: ImageBitmap; ms: number }>) => {
       const m = e.data
       if (m.type !== 'mask') return
-      const img = new ImageData(new Uint8ClampedArray(m.data), m.w, m.h)
-      this.latest.set(m.key, img)
+      const waiter = this.waiting.get(m.id)
+      if (waiter) {
+        // Exportación: la máscara es de quien la pidió (la cierra después de usarla).
+        waiter(m.bitmap)
+        this.waiting.delete(m.id)
+      } else {
+        this.latest.get(m.key)?.close()
+        this.latest.set(m.key, m.bitmap)
+      }
       this.busy.delete(m.key)
-      this.waiting.get(m.id)?.(img)
-      this.waiting.delete(m.id)
       this.onMask?.()
     }
   }
@@ -52,7 +57,7 @@ export class Segmenter {
     return shared
   }
 
-  private async send(key: string, src: TexImageSource | ImageData, reset: boolean): Promise<ImageData> {
+  private async send(key: string, src: TexImageSource | ImageBitmap, reset: boolean): Promise<ImageBitmap> {
     // Se reduce en la GPU antes de mandarlo: el modelo trabaja a 256×256.
     const frame = await createImageBitmap(src as ImageBitmapSource, { resizeWidth: INPUT, resizeHeight: INPUT, resizeQuality: 'medium' })
     const id = this.nextId++
@@ -66,17 +71,39 @@ export class Segmenter {
    * Vista previa: pide una máscara nueva si el worker está libre para este clip y
    * devuelve la última disponible (puede ir un cuadro atrás, no se nota).
    */
-  request(key: string, src: TexImageSource): ImageData | undefined {
+  request(key: string, src: TexImageSource): ImageBitmap | undefined {
     if (!this.busy.has(key)) {
       this.busy.add(key)
-      this.send(key, src, false).catch(() => this.busy.delete(key))
+      this.send(key, src, false)
+        .then((bitmap) => {
+          this.latest.get(key)?.close()
+          this.latest.set(key, bitmap)
+        })
+        .catch(() => this.busy.delete(key))
     }
     return this.latest.get(key)
   }
 
+  /**
+   * Exportación en paralelo: copia el cuadro (ya se puede soltar la fuente) y devuelve
+   * la promesa de su máscara, que el worker calcula mientras se dibuja lo demás.
+   */
+  async submit(key: string, src: TexImageSource | ImageBitmap): Promise<{ mask: Promise<ImageBitmap> }> {
+    const frame = await createImageBitmap(src as ImageBitmapSource, { resizeWidth: INPUT, resizeHeight: INPUT, resizeQuality: 'medium' })
+    const id = this.nextId++
+    const mask = new Promise<ImageBitmap>((resolve) => this.waiting.set(id, resolve))
+    this.worker.postMessage({ type: 'segment', id, key, frame, reset: false }, [frame])
+    return { mask }
+  }
+
   /** Exportación: la máscara exacta de este cuadro. */
-  segmentNow(key: string, src: TexImageSource | ImageData): Promise<ImageData> {
+  segmentNow(key: string, src: TexImageSource | ImageBitmap): Promise<ImageBitmap> {
     return this.send(key, src, false)
+  }
+
+  /** ¿Ya hay máscara para este clip? (la captura de cuadros del CLI la espera) */
+  has(key: string): boolean {
+    return this.latest.has(key)
   }
 
   forget(key: string) {

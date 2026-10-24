@@ -445,9 +445,23 @@ function LutBrowser() {
         <button className="active">LUT</button>
       </div>
       <div className="side-content">
-        <button className="btn" onClick={() => api.importLuts().then(refresh).catch((e) => toast(String(e), true))}>
-          <Icon name="plus" size={12} /> Importar
-        </button>
+        <div className="inline">
+          <button className="btn" onClick={() => api.importLuts().then(refresh).catch((e) => toast(String(e), true))}>
+            <Icon name="plus" size={12} /> Importar
+          </button>
+          <button
+            className="btn"
+            title="Capa de ajuste en el cursor: afecta todo lo que tiene debajo"
+            onClick={() => {
+              const s = useEditor.getState()
+              const [id] = s.dispatch({ op: 'addAdjust', start: s.time })
+              if (id) s.select(id)
+            }}
+          >
+            <Icon name="adjust" size={12} /> Agregar ajuste
+          </button>
+        </div>
+        <div className="hint" style={{ marginTop: 6 }}>Arrastra un LUT a la línea de tiempo para crear una capa de ajuste, o haz clic para aplicarlo al clip seleccionado.</div>
         <div className="asset-grid">
           {luts.map((l) => (
             <div
@@ -456,7 +470,7 @@ function LutBrowser() {
               draggable
               onDragStart={(e) => e.dataTransfer.setData('application/x-cancun-lut', JSON.stringify({ path: l.path, name: l.name }))}
               onClick={() => apply(l)}
-              title={`${l.path}\nClic: aplicar al clip seleccionado · Arrastrar: soltar sobre un clip`}
+              title={`${l.path}\nClic: aplicar al clip seleccionado · Arrastrar: capa de ajuste`}
             >
               <div className="thumb lut-thumb" style={l.thumb ? { backgroundImage: `url("${mediaUrl(l.thumb)}")` } : undefined}>
                 {!l.thumb && <Icon name="adjust" size={22} />}

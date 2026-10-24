@@ -3,6 +3,7 @@ import type { ClipPatch, Op } from '@shared/ops'
 import { ANIMATIONS, COMBOS, DEFAULT_ANIMATION_US, getPath, resolveClip } from '@shared/animate'
 import {
   type Adjust,
+  type AdjustClip,
   type Clip,
   type EffectClip,
   type KeyProp,
@@ -712,7 +713,7 @@ const ADJUST_FIELDS: { key: keyof Adjust; label: string; min?: number }[] = [
   { key: 'vignette', label: 'Viñeta', min: 0 }
 ]
 
-function AdjustTab({ clip }: { clip: MediaClip }) {
+function AdjustTab({ clip }: { clip: MediaClip | AdjustClip }) {
   const [luts, setLuts] = useState<LutEntry[]>([])
   useEffect(() => {
     void api.listLuts().then(setLuts)
@@ -739,6 +740,15 @@ function AdjustTab({ clip }: { clip: MediaClip }) {
           </select>
         </div>
         {lut && <PropSlider clip={clip} prop="color.lut.intensity" label="Intensidad" min={0} max={1} show={pct} parse={fromPct} reset={1} />}
+        <div className="row-inline">
+          <span className="lbl">
+            <span>
+              Proteger el tono de la piel
+              <span className="hint" style={{ display: 'block' }}>Los tonos de piel se ven más naturales con el LUT.</span>
+            </span>
+          </span>
+          <Toggle on={clip.color.protectSkin} onChange={(v) => update(clip, { color: { protectSkin: v } })} />
+        </div>
       </Group>
       <Group
         title="Ajustes básicos"
@@ -876,6 +886,8 @@ export function Inspector() {
       ? ['Texto', 'Básico', 'Animación']
       : clip.type === 'effect'
         ? ['Efecto']
+        : clip.type === 'adjust'
+          ? ['Ajustar']
         : media?.kind === 'audio'
           ? ['Audio', 'Velocidad']
           : media?.kind === 'image'
@@ -900,6 +912,8 @@ export function Inspector() {
         active === 'Texto' ? <TextTab clip={clip} /> : active === 'Básico' ? <div className="insp-body"><Transform clip={clip} project={project} /><Blend clip={clip} /></div> : <AnimationTab clip={clip} />
       ) : clip.type === 'effect' ? (
         <EffectTab clip={clip} />
+      ) : clip.type === 'adjust' ? (
+        <AdjustTab clip={clip} />
       ) : active === 'Video' ? (
         <VideoTab clip={clip} project={project} />
       ) : active === 'Audio' ? (

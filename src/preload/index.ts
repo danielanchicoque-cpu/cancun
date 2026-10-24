@@ -1,4 +1,41 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import { connect, type Socket } from 'node:net'
+
+// Conexiones directas del motor de render a ffmpeg (sin pasar por el proceso principal).
+const sinks = new Map<number, Socket>()
+let nextSink = 1
+
+function openSink(port: number): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let tries = 0
+    const attempt = () => {
+      const sock = connect({ host: '127.0.0.1', port })
+      sock.setNoDelay(true)
+      sock.once('connect', () => {
+        const id = nextSink++
+        sinks.set(id, sock)
+        resolve(id)
+      })
+      sock.once('error', (err) => {
+        sock.destroy()
+        // ffmpeg puede tardar un momento en empezar a escuchar.
+        if (++tries < 100) setTimeout(attempt, 100)
+        else reject(err)
+      })
+    }
+    attempt()
+  })
+}
+
+function writeSink(id: number, data: Uint8Array): Promise<void> {
+  const sock = sinks.get(id)
+  if (!sock || sock.destroyed) return Promise.reject(new Error('ffmpeg cerró la conexión'))
+  return new Promise((resolve, reject) => {
+    const ok = sock.write(data, (err) => err && reject(err))
+    if (ok) resolve()
+    else sock.once('drain', () => resolve())
+  })
+}
 
 const invoke = (channel: string, ...args: unknown[]) => ipcRenderer.invoke(channel, ...args)
 
@@ -58,7 +95,14 @@ const api = {
     frame: (jobId: number, data: Uint8Array, index: number) => invoke('render:frame', jobId, data, index),
     done: (jobId: number) => ipcRenderer.send('render:done', jobId),
     fail: (jobId: number, error: string) => ipcRenderer.send('render:fail', jobId, error),
-    ready: () => ipcRenderer.send('render:ready')
+    ready: () => ipcRenderer.send('render:ready'),
+    progress: (jobId: number, index: number) => ipcRenderer.send('render:progress', jobId, index),
+    sinkOpen: (port: number) => openSink(port),
+    sinkWrite: (id: number, data: Uint8Array) => writeSink(id, data),
+    sinkClose: (id: number) => {
+      sinks.get(id)?.end()
+      sinks.delete(id)
+    }
   },
   reveal: (path: string) => invoke('shell:reveal', path),
   bridge: {

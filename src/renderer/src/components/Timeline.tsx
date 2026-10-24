@@ -42,7 +42,7 @@ function displayOrder(p: Project): Track[] {
 
 function clipKindOf(p: Project, c: Clip): Track['kind'] {
   if (c.type === 'text') return 'text'
-  if (c.type === 'effect') return 'effect'
+  if (c.type === 'effect' || c.type === 'adjust') return 'effect'
   return p.media[c.mediaId]?.kind === 'audio' ? 'audio' : 'video'
 }
 
@@ -171,13 +171,13 @@ const ClipView = memo(function ClipView({ clip, project, zoom, height, selected,
     return [...set]
   }, [clip.keyframes])
   const label =
-    clip.type === 'text' ? clip.text.split('\n')[0] || 'Texto' : clip.type === 'effect' ? EFFECTS.find((e) => e.id === clip.effect)?.label ?? clip.effect : (c.freeze ? '❄ ' : '') + (media?.name ?? '')
+    clip.type === 'text' ? clip.text.split('\n')[0] || 'Texto' : clip.type === 'effect' ? EFFECTS.find((e) => e.id === clip.effect)?.label ?? clip.effect : clip.type === 'adjust' ? `${clip.name}${clip.color.lut ? ` · ${clip.color.lut.name}` : ''}` : (c.freeze ? '❄ ' : '') + (media?.name ?? '')
   const innerH = height - 6
   // En video la línea de volumen vive sobre la forma de onda (abajo); en audio ocupa todo el alto.
   const volH = isAudio ? innerH : Math.round(innerH * 0.45)
   return (
     <div
-      className={`clip ${kind} ${selected ? 'selected' : ''}`}
+      className={`clip ${clip.type === 'adjust' ? 'adjust' : kind} ${selected ? 'selected' : ''}`}
       style={{ left, width }}
       data-clip-id={clip.id}
       onPointerDown={(e) => onPointerDown(e, clip, 'move')}
@@ -241,6 +241,13 @@ const ClipView = memo(function ClipView({ clip, project, zoom, height, selected,
     </div>
   )
 })
+
+/** Línea amarilla que sigue al mouse (vista previa al pasar el cursor, como CapCut). */
+function HoverLine({ zoom }: { zoom: number }) {
+  const t = useEditor((s) => (s.skim && !s.playing ? s.hoverTime : null))
+  if (t === null) return null
+  return <div className="hover-line" style={{ left: (t / US) * zoom }} />
+}
 
 function Playhead({ zoom, onDrag }: { zoom: number; onDrag: (e: React.PointerEvent) => void }) {
   const time = useEditor((s) => s.time)
@@ -309,6 +316,7 @@ export function Timeline() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const headsRef = useRef<HTMLDivElement>(null)
   const settings = project.settings
+  const skim = useEditor((s) => s.skim)
   const selected = useMemo(() => new Set(selection), [selection])
 
   const order = useMemo(() => displayOrder(project), [project])
@@ -555,11 +563,16 @@ export function Timeline() {
 
     const lut = dt.getData('application/x-cancun-lut')
     if (lut) {
-      const target = clipAtPoint(e.clientX, e.clientY)
-      if (!target || target.type !== 'media') return toast('Suelta el LUT encima de un clip de video', true)
       const l = JSON.parse(lut) as { path: string; name: string }
-      run({ op: 'setLut', clipId: target.id, lut: { ...l, intensity: target.color.lut?.intensity ?? 1 } })
-      st.select(target.id)
+      const target = clipAtPoint(e.clientX, e.clientY)
+      // Sobre una capa de ajuste: le cambia el LUT. En cualquier otro lugar: capa de ajuste nueva.
+      if (target?.type === 'adjust') {
+        run({ op: 'setLut', clipId: target.id, lut: { ...l, intensity: target.color.lut?.intensity ?? 1 } })
+        st.select(target.id)
+        return
+      }
+      const [id] = run({ op: 'addAdjust', start: at, lut: { ...l, intensity: 1 } })
+      if (id) st.select(id)
       return
     }
     const transition = dt.getData('application/x-cancun-transition') as TransitionKind
@@ -634,6 +647,13 @@ export function Timeline() {
           </button>
         ))}
         <span className="spacer" />
+        <button
+          className={`toggle-btn ${skim ? 'on' : ''}`}
+          title={skim ? 'Desactivar la vista previa al pasar el cursor' : 'Activar la vista previa al pasar el cursor'}
+          onClick={() => useEditor.getState().setSkim(!skim)}
+        >
+          <Icon name="skim" />
+        </button>
         <button
           className={`toggle-btn ${settings.mainMagnet ? 'on' : ''}`}
           title={settings.mainMagnet ? 'Desactivar el imán de la pista principal' : 'Activar el imán de la pista principal'}
@@ -729,6 +749,12 @@ export function Timeline() {
           onDragLeave={() => setDropRow(null)}
           onDrop={onDrop}
           onPointerDown={onBackgroundPointerDown}
+          onPointerMove={(e) => {
+            const st = useEditor.getState()
+            if (!st.skim || e.buttons !== 0) return st.setHover(null)
+            st.setHover(Math.min(timeAt(e.clientX), projectDuration(st.project!)))
+          }}
+          onPointerLeave={() => useEditor.getState().setHover(null)}
         >
           <div className="tl-content" style={{ width: contentW, height: contentH }}>
             <Ruler zoom={zoom} width={contentW} scrollLeft={scrollLeft} fps={project.canvas.fps} onSeek={dragPlayhead} />
@@ -803,6 +829,7 @@ export function Timeline() {
             {ghost && <div className="ghost-clip" style={ghost} />}
             {snapX !== null && <div className="snap-line" style={{ left: snapX }} />}
             {marquee && <div className="marquee" style={{ left: marquee.x0, top: marquee.y0, width: marquee.x1 - marquee.x0, height: marquee.y1 - marquee.y0 }} />}
+            <HoverLine zoom={zoom} />
             <Playhead zoom={zoom} onDrag={dragPlayhead} />
           </div>
         </div>

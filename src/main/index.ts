@@ -9,7 +9,7 @@ import { resetChat, sendChat, stopChat, type ChatContext } from './chat'
 import { closeDecode, nextFrame, openDecode } from './decodeFallback'
 import { registerRenderIpc, startExport, type ExportJob } from './exporter'
 import { importLuts, listLuts, loadLut, syncFromCapCut } from './luts'
-import { filmstrip, listSounds, probe, reverseMedia, waveform } from './media'
+import { filmstrip, listSounds, probe, reverseMedia, unpackedRoot, waveform } from './media'
 import { deleteProject, listProjects, loadProject, saveProject } from './projectStore'
 
 // Esquema propio para que el reproductor lea archivos locales con saltos (Range),
@@ -133,7 +133,7 @@ function registerIpc() {
   ipcMain.handle('media:reveal', (_e, path: string) => shell.showItemInFolder(path))
   ipcMain.handle('media:reverse', (_e, path: string) => reverseMedia(path))
   ipcMain.handle('sounds:list', () => listSounds(soundsRoot()))
-  ipcMain.handle('paths:app', () => app.getAppPath())
+  ipcMain.handle('paths:app', () => unpackedRoot())
   ipcMain.handle('decode:open', (_e, path: string, startUs: number, rate: number, w: number, h: number) => openDecode(path, startUs, rate, w, h))
   ipcMain.handle('decode:frame', (_e, id: number) => nextFrame(id))
   ipcMain.handle('decode:close', (_e, id: number) => closeDecode(id))
@@ -195,6 +195,7 @@ function createWindow() {
     show: false,
     backgroundColor: '#141414',
     title: 'Cancun',
+    icon: join(here, '../../build/icon.png'),
     autoHideMenuBar: true,
     webPreferences: {
       preload: preloadPath,
@@ -218,6 +219,17 @@ function createWindow() {
 
 app.commandLine.appendSwitch('enable-gpu-rasterization')
 app.commandLine.appendSwitch('ignore-gpu-blocklist')
+
+app.setAppUserModelId('com.daniel.cancun')
+
+// Una sola ventana de Cancun: si ya está abierta, se trae al frente.
+if (!app.requestSingleInstanceLock()) app.quit()
+app.on('second-instance', () => {
+  if (win) {
+    if (win.isMinimized()) win.restore()
+    win.focus()
+  }
+})
 
 app.whenReady().then(async () => {
   protocol.handle('media', serveMedia)

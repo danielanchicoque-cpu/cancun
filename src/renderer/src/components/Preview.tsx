@@ -47,7 +47,7 @@ function Timecode() {
 
 /** Rectángulo del clip en píxeles del lienzo del proyecto. */
 function clipBox(p: Project, clip: Clip): { w: number; h: number } | null {
-  if (clip.type === 'effect') return null
+  if (clip.type === 'effect' || clip.type === 'adjust') return null
   const t = clip.transform
   if (clip.type === 'media') {
     const m = p.media[clip.mediaId]
@@ -235,7 +235,10 @@ export function Preview() {
     const unsub = useEditor.subscribe((s, prev) => {
       if (s.project && s.project !== prev.project) p.setProject(s.project)
       if (s.playing !== prev.playing) (s.playing ? p.play() : p.pause())
-      if (s.time !== prev.time) p.seek(s.time)
+      // Al pasar el mouse por la línea de tiempo se muestra ese cuadro; al salir, vuelve al cursor.
+      const shown = !s.playing && s.hoverTime !== null ? s.hoverTime : s.time
+      const before = !prev.playing && prev.hoverTime !== null ? prev.hoverTime : prev.time
+      if (shown !== before) p.seek(shown)
     })
     const onFs = () => setFullscreen(document.fullscreenElement === panelRef.current)
     document.addEventListener('fullscreenchange', onFs)

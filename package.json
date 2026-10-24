@@ -13,7 +13,8 @@
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test tests/*.test.ts"
+    "test": "node --test tests/*.test.ts",
+    "dist": "electron-vite build && electron-builder --win nsis"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
@@ -22,6 +23,7 @@
     "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^5.2.0",
     "electron": "^37.10.3",
+    "electron-builder": "^26.18.0",
     "electron-vite": "^4.0.1",
     "typescript": "^5.9.3",
     "vite": "^7.3.7"
@@ -38,5 +40,51 @@
     "electron@37.10.3": true,
     "esbuild@0.25.12": true,
     "esbuild@0.28.2": true
+  },
+  "author": "Daniel",
+  "build": {
+    "appId": "com.daniel.cancun",
+    "productName": "Cancun",
+    "copyright": "Daniel",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "out/**/*",
+      "vendor/**/*",
+      "resources/**/*",
+      "cli/**/*",
+      "package.json",
+      "build/icon.png"
+    ],
+    "asarUnpack": [
+      "vendor/**",
+      "resources/**",
+      "node_modules/@mediapipe/tasks-vision/wasm/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "shortcutName": "Cancun",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "artifactName": "Cancun-Instalador-${version}.${ext}",
+      "language": "3082"
+    }
   }
 }

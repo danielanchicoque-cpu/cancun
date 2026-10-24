@@ -3,6 +3,7 @@
 
 import { getPath, resolveClip } from './animate.ts'
 import {
+  type AdjustClip,
   type Clip,
   type EditorSettings,
   type EffectClip,
@@ -44,6 +45,7 @@ export type ClipPatch =
   | DeepPartial<Omit<MediaClip, 'id' | 'type'>>
   | DeepPartial<Omit<TextClip, 'id' | 'type'>>
   | DeepPartial<Omit<EffectClip, 'id' | 'type'>>
+  | DeepPartial<Omit<AdjustClip, 'id' | 'type'>>
 
 export type Op =
   | { op: 'rename'; name: string }
@@ -58,6 +60,7 @@ export type Op =
   | { op: 'addClip'; mediaId: Id; trackId?: TrackTarget; start?: number; sourceIn?: number; duration?: number }
   | { op: 'addText'; text: string; start: number; duration?: number; trackId?: TrackTarget; style?: Partial<TextStyle> }
   | { op: 'addEffect'; effect: string; start: number; duration?: number; params?: Record<string, number> }
+  | { op: 'addAdjust'; start: number; duration?: number; lut?: LutRef | null; name?: string }
   | { op: 'moveClip'; clipId: Id; start: number; trackId?: TrackTarget }
   | { op: 'moveClips'; clipIds: Id[]; delta: number }
   | { op: 'trimClip'; clipId: Id; side: 'start' | 'end'; time: number }
@@ -121,7 +124,7 @@ function requireClip(p: Project, clipId: Id) {
 const isMainTrack = (p: Project, t: Track) => p.tracks[0] === t
 
 function clipKind(track: Track, clip: Clip): TrackKind {
-  return clip.type === 'text' ? 'text' : clip.type === 'effect' ? 'effect' : track.kind
+  return clip.type === 'text' ? 'text' : clip.type === 'effect' || clip.type === 'adjust' ? 'effect' : track.kind
 }
 
 function sortClips(t: Track) {
@@ -250,7 +253,7 @@ function newMediaClip(media: Media, start: number, sourceIn: number, duration: n
     fadeIn: 0,
     fadeOut: 0,
     ...clipBase(),
-    color: { lut: null, adjust: defaultAdjust() },
+    color: { lut: null, adjust: defaultAdjust(), protectSkin: false },
     crop: defaultCrop(),
     mask: defaultMask(),
     light: defaultLight(),
@@ -407,6 +410,25 @@ export function applyOp(project: Project, op: Op): OpResult {
       break
     }
 
+    case 'addAdjust': {
+      const duration = op.duration ?? EFFECT_DEFAULT
+      const track = freeTrack(p, 'effect', op.start, op.start + duration)
+      const count = p.tracks.reduce((n, t) => n + t.clips.filter((c) => c.type === 'adjust').length, 0)
+      const clip: AdjustClip = {
+        id: newId(),
+        type: 'adjust',
+        name: op.name ?? `Ajustar${count + 1}`,
+        start: op.start,
+        duration,
+        color: { lut: op.lut ?? null, adjust: defaultAdjust(), protectSkin: false },
+        ...clipBase()
+      }
+      track.clips.push(clip)
+      sortClips(track)
+      createdId = clip.id
+      break
+    }
+
     case 'moveClip': {
       const { track, clip, index } = requireClip(p, op.clipId)
       const kind = clipKind(track, clip)
@@ -539,7 +561,7 @@ export function applyOp(project: Project, op: Op): OpResult {
         c.id = newId()
         c.start = Math.max(0, Math.round(op.at + (src.start - first)))
         if (c.type === 'media') c.transition = null
-        const kind: TrackKind = c.type === 'text' ? 'text' : c.type === 'effect' ? 'effect' : p.media[c.mediaId].kind === 'audio' ? 'audio' : 'video'
+        const kind: TrackKind = c.type === 'text' ? 'text' : c.type === 'effect' || c.type === 'adjust' ? 'effect' : p.media[c.mediaId].kind === 'audio' ? 'audio' : 'video'
         const track = freeTrack(p, kind, c.start, clipEnd(c))
         track.clips.push(c)
         sortClips(track)
@@ -619,7 +641,7 @@ export function applyOp(project: Project, op: Op): OpResult {
 
     case 'setLut': {
       const { clip } = requireClip(p, op.clipId)
-      if (clip.type !== 'media') throw new OpError('Los LUT solo se aplican a clips de video o imagen')
+      if (clip.type !== 'media' && clip.type !== 'adjust') throw new OpError('Los LUT se aplican a clips de video, imagen o capas de ajuste')
       clip.color.lut = op.lut ? { ...op.lut, intensity: Math.min(1, Math.max(0, op.lut.intensity)) } : null
       if (!op.lut) delete clip.keyframes['color.lut.intensity']
       break

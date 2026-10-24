@@ -21,6 +21,8 @@ export interface ExportOptions {
   /** Codificador de video que funciona en este equipo (lo detecta el proceso principal). */
   encoder: string
   filterPath: string
+  /** De dónde lee ffmpeg el video crudo (por defecto stdin). */
+  input?: string
   range?: { start: number; end: number }
 }
 
@@ -81,7 +83,7 @@ export function buildExport(project: Project, opts: ExportOptions): ExportPlan {
   if (total <= 0) throw new Error('El proyecto está vacío')
   const frames = Math.max(1, Math.round((total / US) * fps))
 
-  const inputs: string[] = ['-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', `${W}x${H}`, '-r', String(fps), '-i', 'pipe:0']
+  const inputs: string[] = ['-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-s', `${W}x${H}`, '-r', String(fps), '-i', opts.input ?? 'pipe:0']
   const graph: string[] = []
   const labels: string[] = []
   let inputCount = 1
@@ -143,6 +145,7 @@ export function buildExport(project: Project, opts: ExportOptions): ExportPlan {
 
   const args = [
     '-y', '-hide_banner', '-nostats',
+    ...(opts.input ? ['-nostdin'] : []),
     ...inputs,
     '-map', '0:v',
     ...audio,

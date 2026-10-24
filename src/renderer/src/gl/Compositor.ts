@@ -5,9 +5,9 @@
 
 import { BAKE_SIZE, bakeGrade, isNeutral } from '@shared/color'
 import type { CubeLut } from '@shared/cube'
-import { type EffectClip, type MediaClip, type Project, type TextClip, US, defaultAdjust } from '@shared/project'
+import { type AdjustClip, type Color, type EffectClip, type MediaClip, type Project, type TextClip, US, defaultAdjust } from '@shared/project'
 import type { ClipFrame, Layer } from '@shared/timeline'
-import { BLEND_FS, BLEND_MODES, COPY_FS, EFFECTS, EFFECT_FS, LAYER_FS, QUAD_VS, TRANSITION_FS, TRANSITION_KINDS, YUV_FS } from './shaders'
+import { ADJUST_FS, BLEND_FS, BLEND_MODES, COPY_FS, EFFECTS, EFFECT_FS, LAYER_FS, QUAD_VS, TRANSITION_FS, TRANSITION_KINDS, YUV_FS } from './shaders'
 
 type Program = { prog: WebGLProgram; loc: Record<string, WebGLUniformLocation | null> }
 
@@ -104,6 +104,7 @@ export class Compositor {
   private copyProg: Program
   private blendProg: Program
   private effectProg: Program
+  private adjustProg: Program
   private transProg: Program
   private yuvProg: Program
   private targets = new Map<string, Target>()
@@ -126,11 +127,12 @@ export class Compositor {
     this.layerProg = compile(gl, QUAD_VS, LAYER_FS, [
       ...common, 'uSrc', 'uOpacity', 'uGrade', 'uSeg', 'uHasSeg', 'uUseGrade', 'uGradeSize', 'uCrop', 'uFlip', 'uTexel', 'uClipPx',
       'uSharpen', 'uVignette', 'uChroma', 'uKey', 'uKeyIntensity', 'uKeyShadow', 'uRemoveBg', 'uBgFeather', 'uBgShrink', 'uRetouch',
-      'uMaskShape', 'uMaskRect', 'uMaskParams', 'uMaskInvert', 'uLight', 'uLightColor', 'uLightParams', 'uLightSubject'
+      'uMaskShape', 'uMaskRect', 'uMaskParams', 'uMaskInvert', 'uLight', 'uLightColor', 'uLightParams', 'uLightSubject', 'uProtectSkin'
     ])
     this.copyProg = compile(gl, QUAD_VS, COPY_FS, [...common, 'uSrc', 'uOpacity', 'uFlipY'])
     this.blendProg = compile(gl, QUAD_VS, BLEND_FS, [...common, 'uBase', 'uLayer', 'uMode'])
     this.effectProg = compile(gl, QUAD_VS, EFFECT_FS, [...common, 'uSrc', 'uEffect', 'uTime', 'uIntensity', 'uSpeed', 'uSize'])
+    this.adjustProg = compile(gl, QUAD_VS, ADJUST_FS, [...common, 'uSrc', 'uGrade', 'uUseGrade', 'uGradeSize', 'uProtectSkin', 'uSharpen', 'uVignette', 'uSize'])
     this.transProg = compile(gl, QUAD_VS, TRANSITION_FS, [...common, 'uA', 'uB', 'uP', 'uKind', 'uSize'])
     this.yuvProg = compile(gl, QUAD_VS, YUV_FS, [...common, 'uSrc', 'uSize', 'uPlane'])
 
@@ -201,7 +203,7 @@ export class Compositor {
   }
 
   /** Textura 3D del color de un clip; se rehornea solo cuando cambia el ajuste. */
-  private gradeFor(clip: MediaClip, luts: Map<string, CubeLut>): WebGLTexture | null {
+  private gradeFor(clip: { id: string; color: Color }, luts: Map<string, CubeLut>): WebGLTexture | null {
     const lut = clip.color.lut
     const lutData = lut ? luts.get(lut.path) ?? null : null
     if (!lutData && isNeutral(clip.color.adjust)) return null
@@ -291,6 +293,7 @@ export class Compositor {
     gl.uniform3f(loc.uLightColor, ...hexRgb(c.light.color))
     gl.uniform4f(loc.uLightParams, c.light.x, c.light.y, c.light.radius, c.light.intensity)
     gl.uniform1i(loc.uLightSubject, c.light.subjectOnly ? 1 : 0)
+    gl.uniform1i(loc.uProtectSkin, c.color.protectSkin && grade ? 1 : 0)
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
   }
 
@@ -446,6 +449,34 @@ export class Compositor {
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
   }
 
+  private applyAdjust(clip: AdjustClip, luts: Map<string, CubeLut>) {
+    const gl = this.gl
+    const grade = this.gradeFor(clip, luts)
+    const a = clip.color.adjust
+    if (!grade && !a.sharpen && !a.vignette) return
+    gl.disable(gl.BLEND)
+    const src = this.target(this.acc)
+    const out = this.swapAcc()
+    this.bind(out)
+    const { prog, loc } = this.adjustProg
+    gl.useProgram(prog)
+    gl.uniformMatrix3fv(loc.uMatrix, false, this.fullQuad())
+    gl.uniform2f(loc.uCanvas, this.width, this.height)
+    gl.activeTexture(gl.TEXTURE0)
+    gl.bindTexture(gl.TEXTURE_2D, src.tex)
+    gl.uniform1i(loc.uSrc, 0)
+    gl.activeTexture(gl.TEXTURE1)
+    gl.bindTexture(gl.TEXTURE_3D, grade ?? this.identity)
+    gl.uniform1i(loc.uGrade, 1)
+    gl.uniform1i(loc.uUseGrade, grade ? 1 : 0)
+    gl.uniform1f(loc.uGradeSize, BAKE_SIZE)
+    gl.uniform1i(loc.uProtectSkin, clip.color.protectSkin ? 1 : 0)
+    gl.uniform1f(loc.uSharpen, a.sharpen)
+    gl.uniform1f(loc.uVignette, a.vignette)
+    gl.uniform2f(loc.uSize, this.width, this.height)
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+  }
+
   render(
     p: Project,
     layers: Layer[],
@@ -465,6 +496,8 @@ export class Compositor {
         this.composite(layer.clip.blend, () => this.drawText(p, layer.clip))
       } else if (layer.kind === 'effect') {
         this.applyEffect(layer.clip, layer.local)
+      } else if (layer.kind === 'adjust') {
+        this.applyAdjust(layer.clip, luts)
       } else {
         // Transición: A y B en capas propias, luego se mezclan sobre el acumulado.
         const ta = this.target('trA')
@@ -506,6 +539,77 @@ export class Compositor {
     gl.uniform1f(loc.uOpacity, 1)
     gl.uniform1i(loc.uFlipY, 0)
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+  }
+
+  private pbos: WebGLBuffer[] = []
+  private pboNext = 0
+
+  /**
+   * Como readYUV, pero sin detener la GPU: la copia queda encargada y la promesa se
+   * cumple cuando termina, así se puede ir dibujando el siguiente cuadro.
+   */
+  readYUVAsync(): Promise<Uint8Array> {
+    const gl = this.gl
+    const W = this.width
+    const H = this.height
+    const size = W * H * 1.5
+    if (!this.pbos.length) {
+      for (let i = 0; i < 4; i++) {
+        const b = gl.createBuffer()!
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, b)
+        gl.bufferData(gl.PIXEL_PACK_BUFFER, size, gl.STREAM_READ)
+        this.pbos.push(b)
+      }
+    }
+    const pbo = this.pbos[this.pboNext++ % this.pbos.length]
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo)
+    this.packYUV((pw, ph, offset) => gl.readPixels(0, 0, pw, ph, gl.RGBA, gl.UNSIGNED_BYTE, offset))
+    const fence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0)!
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+    gl.flush()
+    return new Promise((resolve) => {
+      const poll = () => {
+        const st = gl.clientWaitSync(fence, 0, 0)
+        if (st === gl.TIMEOUT_EXPIRED) return void setTimeout(poll, 1)
+        gl.deleteSync(fence)
+        const out = new Uint8Array(size)
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pbo)
+        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, out)
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null)
+        resolve(out)
+      }
+      poll()
+    })
+  }
+
+  /** Dibuja los tres planos YUV y llama a `read` con cada uno (ancho, alto y posición en el búfer). */
+  private packYUV(read: (pw: number, ph: number, offset: number) => void) {
+    const gl = this.gl
+    const W = this.width
+    const H = this.height
+    const src = this.target(this.acc)
+    const planes: [number, number, number, number][] = [
+      [0, W / 4, H, 0],
+      [1, W / 8, H / 2, W * H],
+      [2, W / 8, H / 2, W * H * 1.25]
+    ]
+    gl.disable(gl.BLEND)
+    gl.pixelStorei(gl.PACK_ALIGNMENT, 1)
+    const { prog, loc } = this.yuvProg
+    for (const [plane, pw, ph, offset] of planes) {
+      const t = this.target(`yuv${plane}`, pw, ph)
+      this.bind(t)
+      gl.useProgram(prog)
+      gl.uniformMatrix3fv(loc.uMatrix, false, new Float32Array([pw, 0, 0, 0, ph, 0, 0, 0, 1]))
+      gl.uniform2f(loc.uCanvas, pw, ph)
+      gl.activeTexture(gl.TEXTURE0)
+      gl.bindTexture(gl.TEXTURE_2D, src.tex)
+      gl.uniform1i(loc.uSrc, 0)
+      gl.uniform2f(loc.uSize, W, H)
+      gl.uniform1i(loc.uPlane, plane)
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+      read(pw, ph, offset)
+    }
   }
 
   /** El último cuadro en YUV 4:2:0 (planos Y, U, V seguidos). El ancho debe ser múltiplo de 8. */

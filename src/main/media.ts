@@ -8,13 +8,16 @@ import { basename, extname, join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { type Media, type MediaKind, US, newId } from '@shared/project'
 
+/** Raíz de la app con los archivos que no pueden ir dentro del asar (ejecutables, modelos). */
+export const unpackedRoot = (): string => app.getAppPath().replace(/app.asar$/, 'app.asar.unpacked')
+
 const IMAGE_EXT = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.tif', '.tiff'])
 const AUDIO_EXT = new Set(['.mp3', '.wav', '.aac', '.m4a', '.flac', '.ogg', '.opus', '.wma'])
 
 // FFmpeg propio de Cancun (7.0.x): es el último que habla con el driver NVIDIA de la
 // GTX 1060 para exportar por GPU. Si no está, se usa el del sistema.
 const vendored = (name: string) => {
-  const p = join(app.getAppPath(), 'vendor', 'ffmpeg', `${name}.exe`)
+  const p = join(unpackedRoot(), 'vendor', 'ffmpeg', `${name}.exe`)
   return existsSync(p) ? p : name
 }
 export const FFMPEG = process.env.CANCUN_FFMPEG ?? vendored('ffmpeg')

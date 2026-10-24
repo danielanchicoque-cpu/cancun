@@ -68,6 +68,8 @@ export interface Adjust {
 export interface Color {
   lut: LutRef | null
   adjust: Adjust
+  /** "Proteger el tono de la piel": el color no se aplica sobre la piel. */
+  protectSkin: boolean
 }
 
 /** Retoque de piel/rostro, 0..1. */
@@ -287,7 +289,14 @@ export interface EffectClip extends ClipBase {
   params: Record<string, number>
 }
 
-export type Clip = MediaClip | TextClip | EffectClip
+/** Capa de ajuste (LUT y ajustes) que afecta todo lo que tiene debajo, como "Ajustar1" en CapCut. */
+export interface AdjustClip extends ClipBase {
+  type: 'adjust'
+  name: string
+  color: Color
+}
+
+export type Clip = MediaClip | TextClip | EffectClip | AdjustClip
 
 export interface Track {
   id: Id
@@ -459,6 +468,7 @@ export function normalizeProject(raw: Project): Project {
       c.keyframes ??= {}
       c.animations = { ...defaultAnimations(), ...c.animations }
       c.blend ??= 'normal'
+      if (c.type === 'media' || c.type === 'adjust') c.color.protectSkin ??= false
       if (c.type === 'media') {
         c.freeze ??= false
         c.crop = { ...defaultCrop(), ...c.crop }
@@ -488,7 +498,8 @@ export function sourceTime(c: MediaClip, t: number): number {
 /** Bitrate automático en kbps, parecido al "Recomendado" de CapCut. */
 export function autoBitrate(width: number, height: number, fps: number): number {
   const pixels = width * height
-  const base = pixels >= 3840 * 2160 ? 40000 : pixels >= 2560 * 1440 ? 24000 : pixels >= 1920 * 1080 ? 12000 : 6000
+  // Valores parecidos a los "Recomendados" de CapCut: buena calidad sin archivos pesados.
+  const base = pixels >= 3840 * 2160 ? 26000 : pixels >= 2560 * 1440 ? 14000 : pixels >= 1920 * 1080 ? 8000 : pixels >= 1280 * 720 ? 4500 : 2500
   return Math.round(base * (fps > 30 ? 1.5 : 1))
 }
 

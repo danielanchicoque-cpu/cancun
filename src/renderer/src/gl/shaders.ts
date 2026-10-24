@@ -46,7 +46,19 @@ uniform bool uLight;
 uniform vec3 uLightColor;
 uniform vec4 uLightParams;     // x, y, radio, intensidad
 uniform bool uLightSubject;
+uniform bool uProtectSkin;
 out vec4 outColor;
+
+// Probabilidad de piel por color (YCbCr): sirve para "Proteger el tono de la piel"
+// cuando no hay máscara de segmentación (capas de ajuste).
+float skinByColor(vec3 c) {
+  float y = dot(c, vec3(0.299, 0.587, 0.114));
+  float cb = 0.5 + dot(c, vec3(-0.168736, -0.331264, 0.5));
+  float cr = 0.5 + dot(c, vec3(0.5, -0.418688, -0.081312));
+  float d = length(vec2((cb - 0.405) / 0.065, (cr - 0.6) / 0.06));
+  return (1.0 - smoothstep(0.7, 1.35, d)) * smoothstep(0.1, 0.22, y);
+}
+
 
 vec3 grade(vec3 c) {
   if (!uUseGrade) return c;
@@ -185,7 +197,9 @@ void main() {
     float hi = clamp(0.5 + uBgShrink * 0.35 + uBgFeather * 0.45, lo + 0.01, 1.0);
     alpha *= smoothstep(lo, hi, m);
   }
+  vec3 ungraded = c;
   c = grade(c);
+  if (uProtectSkin) c = mix(c, ungraded, (uHasSeg ? max(seg.g, skinByColor(ungraded) * 0.5) : skinByColor(ungraded)) * 0.85);
   if (uLight) {
     vec2 lp = (uLightParams.xy * 0.5 + 0.5);
     vec2 d = (vUv - lp) * uClipPx / max(uClipPx.x, uClipPx.y);
@@ -681,4 +695,48 @@ void main() {
     }
   }
   outColor = o;
+}`
+
+/** Capa de ajuste: LUT y ajustes sobre todo lo que tiene debajo. */
+export const ADJUST_FS = `#version 300 es
+precision highp float;
+precision highp sampler3D;
+in vec2 vUv;
+uniform sampler2D uSrc;
+uniform sampler3D uGrade;
+uniform bool uUseGrade;
+uniform float uGradeSize;
+uniform bool uProtectSkin;
+uniform float uSharpen;
+uniform float uVignette;
+uniform vec2 uSize;
+out vec4 outColor;
+
+// Probabilidad de piel por color (YCbCr): sirve para "Proteger el tono de la piel"
+// cuando no hay máscara de segmentación (capas de ajuste).
+float skinByColor(vec3 c) {
+  float y = dot(c, vec3(0.299, 0.587, 0.114));
+  float cb = 0.5 + dot(c, vec3(-0.168736, -0.331264, 0.5));
+  float cr = 0.5 + dot(c, vec3(0.5, -0.418688, -0.081312));
+  float d = length(vec2((cb - 0.405) / 0.065, (cr - 0.6) / 0.06));
+  return (1.0 - smoothstep(0.7, 1.35, d)) * smoothstep(0.1, 0.22, y);
+}
+
+vec4 S(vec2 uv) { return texture(uSrc, vec2(uv.x, 1.0 - uv.y)); }
+
+void main() {
+  vec3 o = S(vUv).rgb;
+  vec3 c = o;
+  if (uSharpen > 0.0) {
+    vec2 t = 1.0 / uSize;
+    vec3 blur = (S(vUv + vec2(t.x, 0.0)).rgb + S(vUv - vec2(t.x, 0.0)).rgb + S(vUv + vec2(0.0, t.y)).rgb + S(vUv - vec2(0.0, t.y)).rgb) * 0.25;
+    c = c + (c - blur) * uSharpen * 1.5;
+  }
+  if (uUseGrade) {
+    vec3 coord = clamp(c, 0.0, 1.0) * ((uGradeSize - 1.0) / uGradeSize) + 0.5 / uGradeSize;
+    c = texture(uGrade, coord).rgb;
+  }
+  if (uProtectSkin) c = mix(c, o, skinByColor(o) * 0.85);
+  if (uVignette > 0.0) c *= mix(1.0, smoothstep(0.85, 0.2, length(vUv - 0.5) * 1.4), uVignette * 0.9);
+  outColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`

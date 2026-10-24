@@ -29,6 +29,10 @@ interface EditorState {
   chatOpen: boolean
   /** Clips copiados con Ctrl+C. */
   clipboard: Clip[]
+  /** Instante bajo el mouse en la línea de tiempo (vista previa al pasar el cursor). */
+  hoverTime: number | null
+  /** Vista previa al pasar el cursor activada. */
+  skim: boolean
 
   open(p: Project): void
   close(): void
@@ -44,6 +48,8 @@ interface EditorState {
   setLayout(l: Layout): void
   toggleChat(v?: boolean): void
   copy(): void
+  setHover(t: number | null): void
+  setSkim(v: boolean): void
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null
@@ -101,6 +107,14 @@ export const useEditor = create<EditorState>((set, get) => {
     layout: readLayout(),
     chatOpen: false,
     clipboard: [],
+    hoverTime: null,
+    skim: (() => {
+      try {
+        return localStorage.getItem('cancun.skim') !== '0'
+      } catch {
+        return true
+      }
+    })(),
 
     open(p) {
       set({ project: p, past: [], future: [], selection: [], time: 0, playing: false, save: 'saved' })
@@ -191,6 +205,19 @@ export const useEditor = create<EditorState>((set, get) => {
         /* sin almacenamiento local, se usa solo en esta sesión */
       }
       set({ layout: l })
+    },
+
+    setHover(t) {
+      if (get().hoverTime !== t) set({ hoverTime: t })
+    },
+
+    setSkim(v) {
+      try {
+        localStorage.setItem('cancun.skim', v ? '1' : '0')
+      } catch {
+        /* sin almacenamiento local */
+      }
+      set({ skim: v, hoverTime: null })
     },
 
     toggleChat: (v) => set({ chatOpen: v ?? !get().chatOpen }),

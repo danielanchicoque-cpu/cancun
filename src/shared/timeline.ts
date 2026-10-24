@@ -3,6 +3,7 @@
 
 import { resolveClip } from './animate.ts'
 import {
+  type AdjustClip,
   type Clip,
   type EffectClip,
   type MediaClip,
@@ -25,6 +26,7 @@ export type Layer =
   | { kind: 'transition'; a: ClipFrame; b: ClipFrame; transition: Transition; progress: number }
   | { kind: 'text'; clip: TextClip }
   | { kind: 'effect'; clip: EffectClip; local: number }
+  | { kind: 'adjust'; clip: AdjustClip }
 
 function frameOf(p: Project, clip: MediaClip, t: number): ClipFrame {
   const media = p.media[clip.mediaId]
@@ -70,6 +72,7 @@ export function layersAt(p: Project, t: number): Layer[] {
       if (t < c.start || t >= clipEnd(c)) continue
       if (c.type === 'text') layers.push({ kind: 'text', clip: resolveClip(c, t) })
       else if (c.type === 'effect') layers.push({ kind: 'effect', clip: c, local: t - c.start })
+      else if (c.type === 'adjust') layers.push({ kind: 'adjust', clip: resolveClip(c, t) })
       else if (p.media[c.mediaId]?.kind !== 'audio') layers.push({ kind: 'clip', frame: frameOf(p, c, t) })
     }
   }

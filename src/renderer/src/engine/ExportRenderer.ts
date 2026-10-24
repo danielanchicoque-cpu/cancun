@@ -18,6 +18,8 @@ export interface RenderJob {
   fps: number
   frames: number
   start: number
+  /** Puerto TCP donde ffmpeg espera los cuadros (camino rápido). */
+  sinkPort?: number
 }
 
 let cancelled = new Set<number>()
@@ -53,15 +55,19 @@ export async function renderJob(job: RenderJob, send: (data: Uint8Array, index: 
   const original = new Map(p.tracks.flatMap((t) => t.clips.map((c) => [c.id, c] as const)))
 
   console.log(`render ${width}x${height} ${fps}fps ${frames} cuadros`)
-  const timing = { decode: 0, render: 0, read: 0, send: 0 }
+  const timing = { decode: 0, seg: 0, render: 0, read: 0, send: 0 }
   let mark = performance.now()
   const lap = (k: keyof typeof timing) => {
     const now = performance.now()
     timing[k] += now - mark
     mark = now
   }
-  // Hasta 3 cuadros viajando hacia ffmpeg mientras se dibuja el siguiente.
+  // Cuadros leyéndose de la GPU y viajando a ffmpeg mientras se dibuja el siguiente.
   const inFlight: Promise<void>[] = []
+  let chain: Promise<void> = Promise.resolve()
+  // Máscara pedida para el cuadro anterior de cada clip: se usa una con un cuadro de
+  // retraso para que el worker segmente en paralelo con el render (no se nota).
+  const pendingMask = new Map<string, Promise<ImageBitmap>>()
   try {
     for (let n = 0; n < frames; n++) {
       if (cancelled.has(job.jobId)) throw new Error('Exportación cancelada')
@@ -78,17 +84,26 @@ export async function renderJob(job: RenderJob, send: (data: Uint8Array, index: 
       for (const f of visible) {
         const provider = await providerFor(original.get(f.clip.id) as MediaClip)
         const src = await provider.frameAt(f.source)
+        lap('decode')
         if (!src) continue
         sources.set(f.clip.id, src)
-        if (segmenter && needsSegmentation(f.clip)) segs.set(f.clip.id, await segmenter.segmentNow(f.clip.id, src as TexImageSource))
+        if (segmenter && needsSegmentation(f.clip)) {
+          const prev = pendingMask.get(f.clip.id)
+          const { mask } = await segmenter.submit(f.clip.id, src as TexImageSource)
+          pendingMask.set(f.clip.id, mask)
+          segs.set(f.clip.id, await (prev ?? mask))
+          lap('seg')
+        }
       }
       lap('decode')
       comp.render(p, layers, sources, luts, segs)
       lap('render')
-      const yuv = comp.readYUV()
+      const yuv = comp.readYUVAsync()
       lap('read')
-      inFlight.push(send(yuv, n))
-      if (inFlight.length >= 3) await inFlight.shift()
+      // Los cuadros salen en orden aunque la lectura sea asíncrona.
+      chain = chain.then(async () => send(await yuv, n))
+      inFlight.push(chain)
+      if (inFlight.length >= 2) await inFlight.shift()
       lap('send')
       if (n % 30 === 29) {
         console.log(`cuadro ${n + 1}/${frames} ms por cuadro: ` + Object.entries(timing).map(([k, v]) => `${k}=${(v / 30).toFixed(1)}`).join(' '))

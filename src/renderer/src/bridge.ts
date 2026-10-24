@@ -37,7 +37,9 @@ export function summarize(p: Project) {
           ? { id: c.id, type: 'text', text: c.text, start: s(c.start), end: s(clipEnd(c)) }
           : c.type === 'effect'
             ? { id: c.id, type: 'effect', effect: c.effect, start: s(c.start), end: s(clipEnd(c)) }
-            : {
+            : c.type === 'adjust'
+              ? { id: c.id, type: 'adjust', name: c.name, start: s(c.start), end: s(clipEnd(c)), lut: c.color.lut ? `${c.color.lut.name} ${Math.round(c.color.lut.intensity * 100)}%` : undefined }
+              : {
               id: c.id,
               type: 'media',
               media: p.media[c.mediaId]?.name,

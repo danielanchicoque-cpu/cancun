@@ -33,9 +33,9 @@ export function Home() {
 
   return (
     <div className="home">
-      <h1>
-        <span>Cancun</span> · Editor de video
-      </h1>
+      <header className="home-head">
+        <img src="./logo.png" alt="Cancún" className="home-logo" />
+      </header>
       <div className="home-new">
         {PRESETS.map((p) => (
           <div key={p.label} className="new-card" onClick={() => create(p.w, p.h)}>

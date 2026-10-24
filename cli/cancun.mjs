@@ -195,9 +195,16 @@ async function main() {
       } catch {
         /* se abre abajo */
       }
+      // Primero la versión instalada (Archivos de programa); si no, la de desarrollo.
+      const installed = [process.env.ProgramFiles, process.env.LOCALAPPDATA && join(process.env.LOCALAPPDATA, 'Programs')]
+        .filter(Boolean)
+        .map((d) => join(d, 'Cancun', 'Cancun.exe'))
+        .find((f) => existsSync(f))
       const electron = join(APP_DIR, 'node_modules', 'electron', 'dist', 'electron.exe')
-      if (!existsSync(join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('Falta compilar la app: npm run build (en la carpeta de Cancun)')
-      const child = spawn(electron, [APP_DIR], { detached: true, stdio: 'ignore', windowsHide: false })
+      if (!installed && !existsSync(join(APP_DIR, 'out', 'main', 'index.js'))) throw new Error('Falta compilar la app: npm run build (en la carpeta de Cancun)')
+      const child = installed
+        ? spawn(installed, [], { detached: true, stdio: 'ignore' })
+        : spawn(electron, [APP_DIR], { detached: true, stdio: 'ignore', windowsHide: false })
       child.unref()
       return print((await waitForApp()) ? 'Cancun abierto.' : 'Se lanzó Cancun pero aún no responde.')
     }
