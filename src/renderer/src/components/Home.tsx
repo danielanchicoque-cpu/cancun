@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { newProject } from '@shared/project'
-import { api, type ProjectSummary } from '../api'
+import { api, mediaUrl, type ProjectSummary } from '../api'
 import { useEditor } from '../store'
 import { shortTime } from '../format'
 import { Icon } from './icons'
@@ -16,6 +16,12 @@ export function Home() {
   const open = useEditor((s) => s.open)
   const [projects, setProjects] = useState<ProjectSummary[]>([])
   const refresh = () => api.listProjects().then(setProjects)
+  // Vista de la lista: con portada (cuadrícula) o solo nombres.
+  const [view, setView] = useState<'covers' | 'list'>(() => (localStorage.getItem('cancun.homeView') === 'list' ? 'list' : 'covers'))
+  const changeView = (v: 'covers' | 'list') => {
+    setView(v)
+    localStorage.setItem('cancun.homeView', v)
+  }
   useEffect(() => {
     void refresh()
   }, [])
@@ -46,11 +52,27 @@ export function Home() {
           </div>
         ))}
       </div>
-      <div className="section-title">Proyectos</div>
+      <div className="section-title home-projects-head">
+        Proyectos
+        <span className="spacer" />
+        <div className="seg">
+          <button className={view === 'covers' ? 'active' : ''} title="Con vista previa" onClick={() => changeView('covers')}>
+            <Icon name="media" size={14} />
+          </button>
+          <button className={view === 'list' ? 'active' : ''} title="Solo nombres" onClick={() => changeView('list')}>
+            <Icon name="adjust" size={14} />
+          </button>
+        </div>
+      </div>
       {projects.length === 0 && <div className="empty">Todavía no hay proyectos. Crea uno arriba.</div>}
-      <div className="project-grid">
+      <div className={`project-grid ${view}`}>
         {projects.map((p) => (
           <div key={p.id} className="project-card" onClick={async () => open(await api.loadProject(p.id))}>
+            {view === 'covers' && (
+              <div className="cover" style={p.cover ? { backgroundImage: `url("${mediaUrl(p.cover)}?v=${p.coverVersion ?? 0}")` } : undefined}>
+                {!p.cover && <Icon name="media" size={26} />}
+              </div>
+            )}
             <div className="name">{p.name}</div>
             <div className="meta">
               {shortTime(p.duration)} · {new Date(p.updatedAt).toLocaleString('es-CO')}

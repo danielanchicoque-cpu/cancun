@@ -20,6 +20,10 @@ export interface ProjectSummary {
   name: string
   updatedAt: string
   duration: number
+  /** Ruta de la portada (cuadro del proyecto), si ya se guardó una. */
+  cover?: string
+  /** Cambia cuando la portada cambia (para no ver una vieja en caché). */
+  coverVersion?: number
 }
 
 async function writeAtomic(path: string, data: string): Promise<void> {
@@ -78,7 +82,9 @@ export async function listProjects(): Promise<ProjectSummary[]> {
       const p = JSON.parse(await readFile(projectFile(entry.name), 'utf8')) as Project
       let duration = 0
       for (const t of p.tracks) for (const c of t.clips) duration = Math.max(duration, c.start + c.duration)
-      out.push({ id: p.id, name: p.name, updatedAt: p.updatedAt, duration })
+      const cover = join(projectDir(entry.name), 'cover.jpg')
+      const coverStat = existsSync(cover) ? await stat(cover) : null
+      out.push({ id: p.id, name: p.name, updatedAt: p.updatedAt, duration, cover: coverStat ? cover : undefined, coverVersion: coverStat?.mtimeMs })
     } catch {
       continue
     }
@@ -89,4 +95,11 @@ export async function listProjects(): Promise<ProjectSummary[]> {
 export async function deleteProject(id: string): Promise<void> {
   const dir = projectDir(id)
   if ((await stat(dir)).isDirectory()) await rm(dir, { recursive: true, force: true })
+}
+
+/** Guarda la portada del proyecto (JPEG en data URL) junto a project.json. */
+export async function saveCover(id: string, dataUrl: string): Promise<void> {
+  const dir = projectDir(id)
+  if (!existsSync(dir)) return
+  await writeFile(join(dir, 'cover.jpg'), Buffer.from(dataUrl.slice(dataUrl.indexOf(',') + 1), 'base64'))
 }

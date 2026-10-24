@@ -17,6 +17,11 @@ import {
   defaultLight,
   defaultMask,
   defaultRetouch,
+  type Retouch,
+  RETOUCH_BODY,
+  RETOUCH_FACE,
+  RETOUCH_FEATURES,
+  RETOUCH_SKIN,
   defaultTransform,
   findClip
 } from '@shared/project'
@@ -573,19 +578,94 @@ function MaskIcon({ shape }: { shape: string }) {
   )
 }
 
+/** Muestras de tono de piel (de clara a oscura), como en CapCut. */
+const SKIN_TONES = ['#f3d5c4', '#e9c0a3', '#d9a47f', '#c98b62', '#b5744e', '#9c5f3d', '#82492d', '#5f3420']
+
+type RetouchKey = keyof Retouch
+const FEATURE_TABS = {
+  eyes: { label: 'Ojos', keys: [['eyeSize', 'Tamaño'], ['eyeBright', 'Brillo en ojos', 'pos'], ['eyeDistance', 'Distancia'], ['eyeHeight', 'Posición']] },
+  nose: { label: 'Nariz', keys: [['noseSize', 'Tamaño'], ['noseWidth', 'Alas'], ['noseBridge', 'Puente'], ['noseHeight', 'Posición']] },
+  mouth: { label: 'Boca', keys: [['mouthSize', 'Tamaño'], ['teeth', 'Blanqueamiento dental', 'pos'], ['smile', 'Sonrisa'], ['lips', 'Grosor de labios']] },
+  brows: { label: 'Cejas', keys: [['browNatural', 'Natural', 'pos'], ['browThick', 'Grosor'], ['browHeight', 'Altura']] }
+} as const
+
 function RetouchTab({ clip }: { clip: MediaClip }) {
   const r = clip.retouch
   const live = useLive()
-  const set = (k: keyof typeof r, v: number) => live.set({ op: 'updateClip', clipId: clip.id, patch: { retouch: { [k]: v } } })
+  const [part, setPart] = useState<'face' | 'body'>('face')
+  const [feature, setFeature] = useState<keyof typeof FEATURE_TABS>('nose')
+  const set = (k: RetouchKey, v: number) => live.set({ op: 'updateClip', clipId: clip.id, patch: { retouch: { [k]: v } } })
+  const patch = (p: Partial<Retouch>) => update(clip, { retouch: p })
+  const resetKeys = (keys: readonly RetouchKey[], extra: Partial<Retouch> = {}) => {
+    const d = defaultRetouch()
+    patch({ ...Object.fromEntries(keys.map((k) => [k, d[k]])), ...extra })
+  }
+  // Piel: 0..100. Rostro, rasgos y cuerpo: -100..100 (0 = sin cambio).
+  const pos = (k: RetouchKey, label: string) => (
+    <Slider key={k} label={label} value={r[k] as number} min={0} max={1} show={pct} parse={fromPct} onChange={(v) => set(k, v)} live={live} reset={0} />
+  )
+  const bi = (k: RetouchKey, label: string) => (
+    <Slider key={k} label={label} value={r[k] as number} min={-1} max={1} show={pct} parse={fromPct} onChange={(v) => set(k, v)} live={live} reset={0} />
+  )
   return (
     <div className="insp-body">
-      <Group title="Piel" onReset={() => update(clip, { retouch: defaultRetouch() })}>
-        <div className="hint">Detecta la piel de cara y cuerpo con IA local y la retoca sin tocar ojos, cejas ni boca.</div>
-        <Slider label="Suavizar" value={r.smooth} min={0} max={1} show={pct} parse={fromPct} onChange={(v) => set('smooth', v)} live={live} reset={0} />
-        <Slider label="Borrar imperfecciones" value={r.removeBlemishes} min={0} max={1} show={pct} parse={fromPct} onChange={(v) => set('removeBlemishes', v)} live={live} reset={0} />
-        <Slider label="Blanqueamiento" value={r.whiten} min={0} max={1} show={pct} parse={fromPct} onChange={(v) => set('whiten', v)} live={live} reset={0} />
-        <Slider label="Tono uniforme" value={r.evenTone} min={0} max={1} show={pct} parse={fromPct} onChange={(v) => set('evenTone', v)} live={live} reset={0} />
-      </Group>
+      <div className="pill-tabs">
+        <button className={part === 'face' ? 'active' : ''} onClick={() => setPart('face')}>Rostro</button>
+        <button className={part === 'body' ? 'active' : ''} onClick={() => setPart('body')}>Cuerpo</button>
+      </div>
+      {part === 'face' ? (
+        <>
+          <Group title="Piel" toggle={{ on: r.skin, set: (v) => patch({ skin: v }) }} onReset={() => resetKeys(RETOUCH_SKIN, { skinTone: null, skinToneAmount: 0.5 })}>
+            {pos('smooth', 'Suavizar')}
+            {pos('whiten', 'Blanqueamiento')}
+            {pos('removeBlemishes', 'Borrar imperfecciones')}
+            {pos('evenTone', 'Uniforme')}
+            {pos('smileLines', 'Arrugas de sonrisa')}
+            {pos('darkCircles', 'Ojeras')}
+            <div className="row">
+              <label>Tono de piel</label>
+            </div>
+            <div className="skin-tones">
+              <button className={`tone none ${r.skinTone === null ? 'active' : ''}`} title="Natural" onClick={() => patch({ skinTone: null })} />
+              {SKIN_TONES.map((t) => (
+                <button key={t} className={`tone ${r.skinTone === t ? 'active' : ''}`} style={{ background: t }} onClick={() => patch({ skinTone: t })} />
+              ))}
+            </div>
+            {r.skinTone && pos('skinToneAmount', 'Intensidad del tono')}
+          </Group>
+          <Group title="Rostro" toggle={{ on: r.face, set: (v) => patch({ face: v }) }} onReset={() => resetKeys(RETOUCH_FACE)}>
+            {bi('faceSmall', 'Más pequeño')}
+            {bi('faceSlim', 'Más delgado')}
+            {bi('faceWide', 'Más ancho')}
+            {bi('hairline', 'Línea de cabello')}
+          </Group>
+          <Group title="Funciones" toggle={{ on: r.features, set: (v) => patch({ features: v }) }} onReset={() => resetKeys(RETOUCH_FEATURES)}>
+            <div className="chip-tabs">
+              {(Object.keys(FEATURE_TABS) as (keyof typeof FEATURE_TABS)[]).map((k) => (
+                <button key={k} className={feature === k ? 'active' : ''} onClick={() => setFeature(k)}>
+                  {FEATURE_TABS[k].label}
+                </button>
+              ))}
+            </div>
+            {FEATURE_TABS[feature].keys.map(([k, label, kind]: readonly string[]) => (kind === 'pos' ? pos(k as RetouchKey, label) : bi(k as RetouchKey, label)))}
+          </Group>
+          <div className="hint">La cara se detecta con IA local en cada cuadro; si no hay cara visible, el clip queda igual.</div>
+        </>
+      ) : (
+        <>
+          <Group title="Cuerpo" toggle={{ on: r.body, set: (v) => patch({ body: v }) }} onReset={() => resetKeys(RETOUCH_BODY)}>
+            {bi('slim', 'Adelgazar')}
+            {bi('head', 'Cabeza pequeña')}
+            {bi('neck', 'Cuello largo')}
+            {bi('arms', 'Brazos delgados')}
+            {bi('bodyWidth', 'Cuerpo delgado')}
+            {bi('waist', 'Cintura')}
+            {bi('torso', 'Torso largo')}
+            {bi('hips', 'Caderas')}
+          </Group>
+          <div className="hint">El cuerpo se detecta con IA local (hombros, cadera, brazos). Funciona mejor de frente y con el torso a la vista.</div>
+        </>
+      )}
     </div>
   )
 }

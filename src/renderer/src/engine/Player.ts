@@ -4,10 +4,10 @@
 
 import type { CubeLut } from '@shared/cube'
 import { type MediaClip, type Project, US, projectDuration } from '@shared/project'
-import { audibleAt, clipsNear, layersAt } from '@shared/timeline'
+import { type ClipFrame, audibleAt, clipsNear, layersAt } from '@shared/timeline'
 import { api, mediaUrl } from '../api'
 import { Compositor, type FrameSource, type SegSource } from '../gl/Compositor'
-import { Segmenter, needsSegmentation } from './Segmenter'
+import { Segmenter, needsSegmentation, segNeeds } from './Segmenter'
 
 const PRELOAD_BEFORE = 1 * US
 const PRELOAD_AFTER = 3 * US
@@ -117,19 +117,33 @@ export class Player {
     return this.canvas.toDataURL('image/png')
   }
 
+  /** Cuadro actual en JPEG pequeño (portada del proyecto). Sin esperar a que cargue nada. */
+  snapshot(width = 360): string {
+    this.draw()
+    const c = document.createElement('canvas')
+    c.width = width
+    c.height = Math.round((width * this.canvas.height) / this.canvas.width)
+    c.getContext('2d')!.drawImage(this.canvas, 0, 0, c.width, c.height)
+    return c.toDataURL('image/jpeg', 0.8)
+  }
+
   private busy(t: number): boolean {
     const p = this.project
     if (!p) return false
     if (this.lutLoading.size > 0 || this.segLoading) return true
     const visible = new Set<string>()
+    const frames: ClipFrame[] = []
     for (const l of layersAt(p, t)) {
-      if (l.kind === 'clip') visible.add(l.frame.clip.id)
-      else if (l.kind === 'transition') visible.add(l.a.clip.id).add(l.b.clip.id)
+      if (l.kind === 'clip') frames.push(l.frame)
+      else if (l.kind === 'transition') frames.push(l.a, l.b)
     }
-    const waitingMask = [...visible].some((id) => {
-      const c = p.tracks.flatMap((t) => t.clips).find((x) => x.id === id)
-      return c?.type === 'media' && needsSegmentation(c) && (!this.segmenter || !this.segmenter.has(id))
-    })
+    for (const f of frames) visible.add(f.clip.id)
+    // Para la captura exacta (CLI, portadas) la máscara tiene que ser de este mismo cuadro.
+    const waitingMask = frames.some(
+      (f) =>
+        needsSegmentation(f.clip) &&
+        (!this.segmenter || (p.media[f.clip.mediaId]?.kind === 'image' ? !this.segmenter.has(f.clip.id) : !this.segmenter.hasFresh(f.clip.id, f.source / US)))
+    )
     return (
       waitingMask ||
       [...this.slots.values()].some((s) => visible.has(s.clipId) && s.el instanceof HTMLVideoElement && (s.el.seeking || s.el.readyState < 2))
@@ -286,8 +300,10 @@ export class Player {
         sources.set(clip.id, slot.el)
         const ready = slot.el instanceof HTMLVideoElement ? slot.el.readyState >= 2 : slot.el.complete
         if (this.segmenter && ready && needsSegmentation(vis.clip)) {
-          const mask = this.segmenter.request(clip.id, slot.el)
-          if (mask) segs.set(clip.id, mask)
+          // Mientras el video busca, su cuadro aún es el viejo: no se pide máscara de él.
+          const video = slot.el instanceof HTMLVideoElement ? slot.el : null
+          const seg = video?.seeking ? this.segmenter.latestFor(clip.id) : this.segmenter.request(clip.id, slot.el, video?.currentTime ?? 0, segNeeds(vis.clip))
+          if (seg) segs.set(clip.id, seg)
         }
       }
     }

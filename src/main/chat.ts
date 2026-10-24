@@ -2,14 +2,70 @@
 // con la sesión de Daniel, así que no hace falta una clave de API aparte. Claude edita
 // con el CLI `cancun`, por eso cada cambio se ve en vivo en la ventana.
 
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdir, writeFile } from 'node:fs/promises'
+import { delimiter, join } from 'node:path'
+import { app } from 'electron'
 
-/** El ejecutable nativo de Claude Code (instalado con npm); sin shell, para pasar bien los argumentos. */
-function claudeExe(): string {
-  const exe = join(process.env.APPDATA ?? '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe')
-  return existsSync(exe) ? exe : 'claude.exe'
+/** El ejecutable nativo de Claude Code (npm o instalador nativo); sin shell, para pasar bien los argumentos. */
+function claudeExe(): string | null {
+  const home = process.env.USERPROFILE ?? ''
+  const candidates = [
+    join(process.env.APPDATA ?? '', 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'),
+    join(home, '.local', 'bin', 'claude.exe'),
+    join(process.env.LOCALAPPDATA ?? '', 'Programs', 'claude', 'claude.exe')
+  ]
+  for (const dir of (process.env.PATH ?? '').split(delimiter)) if (dir) candidates.push(join(dir, 'claude.exe'))
+  return candidates.find((p) => existsSync(p)) ?? null
+}
+
+const NOT_INSTALLED = 'Claude Code no está instalado en este equipo. Instálalo desde claude.com/code (o con  npm i -g @anthropic-ai/claude-code ) y vuelve a abrir el chat.'
+
+/**
+ * Carpeta de trabajo de Claude (la de la app empaquetada está dentro de app.asar, que no es
+ * una carpeta) y un `cancun.cmd` para que Claude pueda usar el CLI aunque no esté instalado con npm.
+ */
+async function workspace(): Promise<{ cwd: string; path: string }> {
+  const cwd = join(app.getPath('userData'), 'claude')
+  const bin = join(cwd, 'bin')
+  await mkdir(bin, { recursive: true })
+  if (app.isPackaged) {
+    const cli = join(process.resourcesPath, 'app.asar', 'cli', 'cancun.mjs')
+    await writeFile(join(bin, 'cancun.cmd'), `@echo off
+set ELECTRON_RUN_AS_NODE=1
+"${process.execPath}" "${cli}" %*
+`)
+  }
+  return { cwd, path: `${bin}${delimiter}${process.env.PATH ?? ''}` }
+}
+
+export interface ClaudeStatus {
+  installed: boolean
+  loggedIn: boolean
+  email?: string
+}
+
+export function claudeStatus(): Promise<ClaudeStatus> {
+  const exe = claudeExe()
+  if (!exe) return Promise.resolve({ installed: false, loggedIn: false })
+  return new Promise((resolve) => {
+    execFile(exe, ['auth', 'status', '--json'], { windowsHide: true, timeout: 20_000 }, (_err, stdout) => {
+      try {
+        const s = JSON.parse(stdout) as { loggedIn?: boolean; email?: string }
+        resolve({ installed: true, loggedIn: !!s.loggedIn, email: s.email })
+      } catch {
+        resolve({ installed: true, loggedIn: false })
+      }
+    })
+  })
+}
+
+/** Abre una ventana con el inicio de sesión de Claude (abre el navegador; si pide un código, se pega ahí). */
+export function claudeLogin() {
+  const exe = claudeExe()
+  if (!exe) throw new Error(NOT_INSTALLED)
+  spawn('cmd.exe', ['/c', 'start', '"Iniciar sesión en Claude"', `"${exe}"`, 'auth', 'login'], { windowsHide: false, detached: true, stdio: 'ignore', shell: false, windowsVerbatimArguments: true }).unref()
 }
 
 export interface ChatEvent {
@@ -24,6 +80,8 @@ export interface ChatContext {
   projectName?: string
   time?: number
   selection?: string[]
+  /** Alias o nombre completo del modelo (vacío = el predeterminado de Claude Code). */
+  model?: string
 }
 
 let child: ChildProcess | null = null
@@ -51,8 +109,15 @@ function toolLabel(name: string, input: Record<string, unknown>): string {
   return name
 }
 
-export function sendChat(text: string, ctx: ChatContext, cwd: string, emit: (e: ChatEvent) => void) {
+export async function sendChat(text: string, ctx: ChatContext, emit: (e: ChatEvent) => void) {
   if (child) throw new Error('Claude todavía está respondiendo')
+  const exe = claudeExe()
+  if (!exe) {
+    emit({ type: 'error', error: NOT_INSTALLED })
+    emit({ type: 'done' })
+    return
+  }
+  const { cwd, path } = await workspace()
   const args = [
     '-p',
     `${describe(ctx)}\n\n${text}`,
@@ -67,9 +132,10 @@ export function sendChat(text: string, ctx: ChatContext, cwd: string, emit: (e: 
     'Glob',
     'Grep'
   ]
+  if (ctx.model) args.push('--model', ctx.model)
   if (sessionId) args.push('--resume', sessionId)
   emit({ type: 'start' })
-  const proc = spawn(claudeExe(), args, { cwd, windowsHide: true, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] })
+  const proc = spawn(exe, args, { cwd, windowsHide: true, env: { ...process.env, PATH: path }, stdio: ['ignore', 'pipe', 'pipe'] })
   child = proc
   let buf = ''
   let err = ''
@@ -112,7 +178,7 @@ export function sendChat(text: string, ctx: ChatContext, cwd: string, emit: (e: 
 
 /** Mensajes de Claude Code que conviene explicar en español. */
 function friendly(text: string): string {
-  if (/not logged in/i.test(text)) return 'Claude Code no tiene sesión iniciada en este equipo. Abre una terminal, escribe  claude  y luego  /login  (una sola vez). Después el chat de Cancun funciona.'
+  if (/not logged in/i.test(text)) return 'Claude no tiene sesión iniciada en este equipo. Pulsa «Iniciar sesión» arriba en este panel (una sola vez).'
   return text
 }
 

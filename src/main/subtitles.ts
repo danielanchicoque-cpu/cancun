@@ -27,7 +27,8 @@ export interface SubtitleProgress {
 const LONG_WORD_MS = 1200
 const TYPICAL_WORD_MS = 450
 
-const root = () => join(app.getPath('userData'), 'whisper')
+// Compartido entre perfiles: el motor y el modelo pesan más de 1 GB.
+const root = () => join(app.getPath('appData'), 'Cancun', 'whisper')
 const exe = () => join(root(), 'bin', 'whisper-cli.exe')
 const model = () => join(root(), MODEL)
 

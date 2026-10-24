@@ -164,3 +164,84 @@
 .subs-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; }
 .subs-row select { flex: 1; max-width: 160px; }
 .subs-go { justify-content: center; padding: 8px 10px; }
+
+.chat-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line, #2a2a2e); }
+.chat-bar select { flex: none; max-width: 170px; }
+.chat-account { font-size: 11px; color: var(--muted, #8a8a90); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-login { margin: 10px; padding: 12px; border-radius: 8px; background: var(--panel-3, #26262a); font-size: 12px; display: flex; flex-direction: column; gap: 10px; }
+.chat-login p { margin: 0; line-height: 1.45; }
+
+/* Inicio: portadas de proyectos */
+.home-projects-head { display: flex; align-items: center; gap: 8px; }
+.home-projects-head .spacer { flex: 1; }
+.seg { display: inline-flex; background: var(--panel-2); border: 1px solid var(--line); border-radius: 7px; padding: 2px; gap: 2px; }
+.seg button { background: none; border: 0; color: var(--muted); padding: 4px 8px; border-radius: 5px; cursor: pointer; display: grid; place-items: center; }
+.seg button.active { background: var(--panel-3); color: var(--text); }
+.project-grid.covers .project-card { padding: 0; overflow: hidden; }
+.project-grid.covers .project-card .name { padding: 10px 12px 0; }
+.project-grid.covers .project-card .meta { padding: 0 12px 10px; }
+.project-card .cover { aspect-ratio: 16 / 9; background: #0c0c0d center / contain no-repeat; display: grid; place-items: center; color: var(--dim); border-bottom: 1px solid var(--line); }
+.project-grid.list { grid-template-columns: 1fr; gap: 6px; }
+.project-grid.list .project-card { display: flex; align-items: baseline; gap: 14px; padding: 10px 14px; }
+.project-grid.list .project-card .name { margin: 0; }
+
+/* Franja de audio del clip de video (como CapCut) */
+.clip .audio-band { position: absolute; left: 0; right: 0; bottom: 0; background: #0b4248; border-top: 1px solid #0006; pointer-events: none; }
+.clip.video .wave { height: auto; bottom: 1px; z-index: 1; }
+.clip .volume-line { z-index: 2; }
+.drag-tip { position: fixed; transform: translate(-50%, -130%); background: #000d; color: #fff; font-size: 11px; padding: 2px 7px; border-radius: 4px; pointer-events: none; z-index: 60; white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* Transición: caja sobre el corte con su duración real */
+.transition-mark { margin: 0; border-radius: 5px; background: #ffffff2e; border: 1px solid #ffffffb0; box-shadow: none; display: grid; place-items: center; cursor: pointer; backdrop-filter: brightness(0.75); }
+.transition-mark.selected { border-color: #fff; background: #ffffff45; box-shadow: 0 0 0 1px #fff; }
+.transition-mark .tr-icon { width: 20px; height: 20px; border-radius: 4px; background: #fff; color: #111; display: grid; place-items: center; }
+.transition-mark .tr-edge { position: absolute; top: 0; bottom: 0; width: 6px; cursor: ew-resize; }
+.transition-mark .tr-edge.l { left: -3px; }
+.transition-mark .tr-edge.r { right: -3px; }
+.transition-mark:hover .tr-edge, .transition-mark.selected .tr-edge { background: #ffffff88; border-radius: 3px; }
+
+/* Catálogos (transiciones, efectos) como CapCut */
+.catalog-title { font-size: 12px; font-weight: 600; color: var(--muted); margin: 2px 0 2px; }
+.asset-grid.square { grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 10px 8px; }
+.asset-grid.square .asset { position: relative; }
+.thumb.square { aspect-ratio: 1 / 1; height: auto !important; background: #1a1a1c center / cover no-repeat; position: relative; overflow: hidden; border-radius: 8px; }
+.thumb.square canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.asset .fav { position: absolute; top: 4px; left: 4px; width: 22px; height: 22px; border-radius: 5px; border: 0; background: #000a; color: #fff; display: grid; place-items: center; opacity: 0; cursor: pointer; z-index: 2; }
+.asset:hover .fav, .asset .fav.on { opacity: 1; }
+.asset .fav.on { color: #ffd34d; }
+.asset-grid.square .label { font-size: 11px; }
+
+/* Audio estilo CapCut: filas con portada y mini reproductor */
+.side-nav .nav-group { display: flex; flex-direction: column; gap: 4px; }
+.side-nav button.sub { background: none; padding: 4px 10px 4px 16px; color: var(--muted); font-size: 12px; }
+.side-nav button.sub.active { color: var(--accent); background: none; }
+.audio-content { position: relative; display: flex; flex-direction: column; }
+.audio-content .sound-list { flex: 1; display: flex; flex-direction: column; gap: 6px; padding-bottom: 70px; }
+.sound-row { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; background: var(--panel-2); border: 1px solid transparent; cursor: pointer; }
+.sound-row:hover { background: var(--panel-3); }
+.sound-row.playing { border-color: var(--accent); }
+.sound-cover { width: 44px; height: 44px; flex: none; border-radius: 6px; background: #333 center / cover; display: grid; place-items: center; color: #fff; position: relative; overflow: hidden; }
+.sound-cover .play-badge { position: absolute; inset: 0; display: grid; place-items: center; background: #0007; opacity: 0; }
+.sound-row:hover .play-badge, .play-badge.on { opacity: 1; }
+.sound-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sound-text .name { font-weight: 600; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sound-text .sub { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sound-row .star-btn { opacity: 0; }
+.sound-row:hover .star-btn, .sound-row .star-btn.on { opacity: 1; }
+.sound-row .star-btn.on { color: #ffd34d; }
+.mini-player { position: sticky; bottom: 0; margin-top: 8px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; background: #2a2a2e; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 -6px 18px #0008; }
+.mini-player .mp-body { flex: 1; min-width: 0; }
+.mini-player .mp-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mini-player .mp-row { display: flex; align-items: center; gap: 8px; }
+.mini-player .mp-row input { flex: 1; accent-color: var(--accent); }
+.mini-player .mp-time { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.btn.subtle { background: none; border: 1px dashed var(--line); color: var(--muted); margin-top: 8px; }
+
+/* Retoque estilo CapCut */
+.pill-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.pill-tabs button, .chip-tabs button { background: var(--panel-3); border: 0; color: var(--text); border-radius: 999px; padding: 5px 14px; cursor: pointer; font-size: 12px; }
+.pill-tabs button.active, .chip-tabs button.active { background: #3a3a3f; color: #fff; box-shadow: inset 0 0 0 1px #ffffff30; }
+.chip-tabs { display: flex; gap: 6px; flex-wrap: wrap; margin: 4px 0 8px; }
+.skin-tones { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 8px; }
+.skin-tones .tone { width: 28px; height: 28px; border-radius: 50%; border: 2px solid transparent; cursor: pointer; padding: 0; }
+.skin-tones .tone.active { border-color: var(--accent); }
+.skin-tones .tone.none { background: linear-gradient(135deg, transparent 46%, #aaa 46% 54%, transparent 54%), var(--panel-3); }

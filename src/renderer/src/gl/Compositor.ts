@@ -7,6 +7,7 @@ import { BAKE_SIZE, bakeGrade, isNeutral } from '@shared/color'
 import type { CubeLut } from '@shared/cube'
 import { type AdjustClip, type Color, type EffectClip, type MediaClip, type Project, type TextClip, US, defaultAdjust } from '@shared/project'
 import type { ClipFrame, Layer } from '@shared/timeline'
+import { type Landmarks, MAX_TONES, MAX_WARPS, retouchOps } from '@shared/retouch'
 import { ADJUST_FS, BLEND_FS, BLEND_MODES, COPY_FS, EFFECTS, EFFECT_FS, LAYER_FS, QUAD_VS, TRANSITION_FS, TRANSITION_KINDS, YUV_FS } from './shaders'
 
 type Program = { prog: WebGLProgram; loc: Record<string, WebGLUniformLocation | null> }
@@ -21,7 +22,11 @@ interface Target {
 export type FrameSource = HTMLVideoElement | HTMLImageElement | VideoFrame | ImageBitmap | ImageData
 
 /** Máscaras de segmentación por clip: r = persona, g = piel. */
-export type SegSource = TexImageSource
+/** Resultado del worker para un clip: máscara (persona/piel) y puntos de cara y cuerpo. */
+export interface SegSource {
+  mask: TexImageSource
+  marks?: Landmarks
+}
 
 const MASK_SHAPES = ['none', 'linear', 'mirror', 'circle', 'rectangle', 'heart', 'star']
 
@@ -126,7 +131,7 @@ export class Compositor {
     const common = ['uMatrix', 'uCanvas']
     this.layerProg = compile(gl, QUAD_VS, LAYER_FS, [
       ...common, 'uSrc', 'uOpacity', 'uGrade', 'uSeg', 'uHasSeg', 'uUseGrade', 'uGradeSize', 'uCrop', 'uFlip', 'uTexel', 'uClipPx',
-      'uSharpen', 'uVignette', 'uChroma', 'uKey', 'uKeyIntensity', 'uKeyShadow', 'uRemoveBg', 'uBgFeather', 'uBgShrink', 'uRetouch',
+      'uSharpen', 'uVignette', 'uChroma', 'uKey', 'uKeyIntensity', 'uKeyShadow', 'uRemoveBg', 'uBgFeather', 'uBgShrink', 'uRetouch', 'uSkinTone', 'uWarpN', 'uWarpA', 'uWarpB', 'uToneN', 'uToneA', 'uToneB', 'uAspect',
       'uMaskShape', 'uMaskRect', 'uMaskParams', 'uMaskInvert', 'uLight', 'uLightColor', 'uLightParams', 'uLightSubject', 'uProtectSkin'
     ])
     this.copyProg = compile(gl, QUAD_VS, COPY_FS, [...common, 'uSrc', 'uOpacity', 'uFlipY'])
@@ -266,7 +271,7 @@ export class Compositor {
     gl.uniform1i(loc.uUseGrade, grade ? 1 : 0)
     gl.uniform1f(loc.uGradeSize, BAKE_SIZE)
     gl.activeTexture(gl.TEXTURE2)
-    gl.bindTexture(gl.TEXTURE_2D, seg ? this.upload(c.id, seg, this.segTex) : this.blank)
+    gl.bindTexture(gl.TEXTURE_2D, seg ? this.upload(c.id, seg.mask, this.segTex) : this.blank)
     gl.uniform1i(loc.uSeg, 2)
     gl.uniform1i(loc.uHasSeg, seg ? 1 : 0)
     gl.uniform1f(loc.uOpacity, Math.max(0, Math.min(1, c.transform.opacity)))
@@ -283,7 +288,18 @@ export class Compositor {
     gl.uniform1i(loc.uRemoveBg, c.background.mode === 'auto' && seg ? 1 : 0)
     gl.uniform1f(loc.uBgFeather, c.background.feather)
     gl.uniform1f(loc.uBgShrink, c.background.shrink)
-    gl.uniform4f(loc.uRetouch, c.retouch.smooth, c.retouch.whiten, c.retouch.removeBlemishes, c.retouch.evenTone)
+    const r = c.retouch
+    const skinOn = r.skin ? 1 : 0
+    gl.uniform4f(loc.uRetouch, r.smooth * skinOn, r.whiten * skinOn, r.removeBlemishes * skinOn, r.evenTone * skinOn)
+    gl.uniform4f(loc.uSkinTone, ...(r.skinTone ? hexRgb(r.skinTone) : ([0, 0, 0] as [number, number, number])), r.skin && r.skinTone ? r.skinToneAmount : 0)
+    const ops = retouchOps(r, seg?.marks, sw / Math.max(1, sh))
+    gl.uniform1f(loc.uAspect, sw / Math.max(1, sh))
+    gl.uniform1i(loc.uWarpN, ops.warpN)
+    gl.uniform4fv(loc.uWarpA, ops.warpA, 0, MAX_WARPS * 4)
+    gl.uniform4fv(loc.uWarpB, ops.warpB, 0, MAX_WARPS * 4)
+    gl.uniform1i(loc.uToneN, ops.toneN)
+    gl.uniform4fv(loc.uToneA, ops.toneA, 0, MAX_TONES * 4)
+    gl.uniform4fv(loc.uToneB, ops.toneB, 0, MAX_TONES * 4)
     const m = c.mask
     gl.uniform1i(loc.uMaskShape, Math.max(0, MASK_SHAPES.indexOf(m.shape)))
     gl.uniform4f(loc.uMaskRect, m.x, m.y, m.width, m.height)

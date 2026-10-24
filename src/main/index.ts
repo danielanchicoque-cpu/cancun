@@ -5,13 +5,14 @@ import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
 import { type Project, normalizeProject } from '@shared/project'
 import { startBridge } from './bridge'
-import { resetChat, sendChat, stopChat, type ChatContext } from './chat'
+import { claudeLogin, claudeStatus, resetChat, sendChat, stopChat, type ChatContext } from './chat'
 import { closeDecode, nextFrame, openDecode } from './decodeFallback'
 import { registerRenderIpc, startExport, type ExportJob } from './exporter'
 import { importLuts, listLuts, loadLut, syncFromCapCut } from './luts'
-import { filmstrip, listSounds, probe, reverseMedia, unpackedRoot, waveform } from './media'
+import { type SoundRoot, filmstrip, listSounds, probe, reverseMedia, soundMeta, unpackedRoot, waveform } from './media'
+import { mkdir } from 'node:fs/promises'
 import { transcribeJobs } from './subtitles'
-import { deleteProject, listProjects, loadProject, saveProject } from './projectStore'
+import { deleteProject, listProjects, loadProject, saveCover, saveProject } from './projectStore'
 
 // Esquema propio para que el reproductor lea archivos locales con saltos (Range),
 // sin abrir el acceso general a file://.
@@ -60,7 +61,15 @@ const preloadPath = join(here, '../preload/index.cjs')
 const rendererDir = join(here, '../renderer')
 
 /** Efectos de sonido de Daniel (pack de creadores virales). */
-const soundsRoot = () => join(app.getPath('desktop'), 'Multimedia y Contenido', 'Recursos', 'PACK RECURSOS CREADORES VIRALES', 'EFECTOS DE SONIDO')
+/** Carpeta propia de música de Cancun (Documentos\Cancun\Música): lo que se ponga ahí aparece en Audio > Música. */
+const musicDir = () => join(app.getPath('documents'), 'Cancun', 'Música')
+
+const soundRoots = (): SoundRoot[] => [
+  { path: musicDir(), kind: 'music', label: 'Mi música' },
+  { path: app.getPath('music'), kind: 'music', label: 'Música de Windows', shallow: true },
+  { path: join(app.getPath('desktop'), 'Multimedia y Contenido', 'Recursos', 'PACK RECURSOS CREADORES VIRALES', 'EFECTOS DE SONIDO'), kind: 'sfx', label: 'Pack creadores' },
+  { path: join(app.getPath('music'), 'Efectos de sonidos 2025 (SoyDaniGz)'), kind: 'sfx', label: 'SoyDaniGz 2025' }
+]
 
 let win: BrowserWindow | null = null
 let exportJob: ExportJob | null = null
@@ -116,6 +125,7 @@ function registerIpc() {
   ipcMain.handle('projects:list', () => listProjects())
   ipcMain.handle('projects:load', async (_e, id: string) => normalizeProject(await loadProject(id)))
   ipcMain.handle('projects:save', (_e, p: Project) => saveProject(p))
+  ipcMain.handle('projects:cover', (_e, id: string, dataUrl: string) => saveCover(id, dataUrl))
   ipcMain.handle('projects:delete', (_e, id: string) => deleteProject(id))
 
   ipcMain.handle('media:pick', async () => {
@@ -134,13 +144,18 @@ function registerIpc() {
   ipcMain.handle('media:waveform', (_e, m) => waveform(m))
   ipcMain.handle('media:reveal', (_e, path: string) => shell.showItemInFolder(path))
   ipcMain.handle('media:reverse', (_e, path: string) => reverseMedia(path))
-  ipcMain.handle('sounds:list', () => listSounds(soundsRoot()))
+  ipcMain.handle('sounds:list', () => listSounds(soundRoots()))
+  ipcMain.handle('sounds:meta', (_e, path: string) => soundMeta(path))
+  ipcMain.handle('sounds:openMusicDir', async () => {
+    await mkdir(musicDir(), { recursive: true })
+    await shell.openPath(musicDir())
+  })
   ipcMain.handle('paths:app', () => unpackedRoot())
   ipcMain.handle('decode:open', (_e, path: string, startUs: number, rate: number, w: number, h: number) => openDecode(path, startUs, rate, w, h))
   ipcMain.handle('decode:frame', (_e, id: number) => nextFrame(id))
   ipcMain.handle('decode:close', (_e, id: number) => closeDecode(id))
   ipcMain.handle('chat:send', (_e, text: string, ctx: ChatContext) =>
-    sendChat(text, ctx, app.getAppPath(), (ev) => win?.webContents.send('chat:event', ev))
+    sendChat(text, ctx, (ev) => win?.webContents.send('chat:event', ev))
   )
   ipcMain.handle('subtitles:run', async (_e, jobs, lang: string) => {
     if (subtitling) throw new Error('Ya se están generando subtítulos')
@@ -152,6 +167,8 @@ function registerIpc() {
     }
   })
   ipcMain.handle('chat:stop', () => stopChat())
+  ipcMain.handle('chat:status', () => claudeStatus())
+  ipcMain.handle('chat:login', () => claudeLogin())
   ipcMain.handle('chat:reset', () => resetChat())
   registerRenderIpc()
 
@@ -232,9 +249,13 @@ app.commandLine.appendSwitch('enable-gpu-rasterization')
 app.commandLine.appendSwitch('ignore-gpu-blocklist')
 
 app.setAppUserModelId('com.daniel.cancun')
+// Perfil aparte para pruebas (CANCUN_PROFILE=dev): no choca con la Cancun instalada que esté abierta.
+if (process.env.CANCUN_PROFILE) app.setPath('userData', join(app.getPath('appData'), `Cancun-${process.env.CANCUN_PROFILE}`))
 
 // Una sola ventana de Cancun: si ya está abierta, se trae al frente.
-if (!app.requestSingleInstanceLock()) app.quit()
+const primary = app.requestSingleInstanceLock()
+// exit (no quit): quit es asíncrono y esta copia alcanzaría a pisar el puente de la que ya está abierta.
+if (!primary) app.exit(0)
 app.on('second-instance', () => {
   if (win) {
     if (win.isMinimized()) win.restore()
@@ -243,6 +264,7 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(async () => {
+  if (!primary) return
   protocol.handle('media', serveMedia)
   registerIpc()
   syncFromCapCut().catch(() => undefined)

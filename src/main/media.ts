@@ -147,15 +147,27 @@ export interface SoundEntry {
   path: string
   /** Carpeta dentro de la biblioteca (vacía = raíz). */
   category: string
+  /** Música o efecto de sonido. */
+  kind: 'music' | 'sfx'
+}
+
+/** Una carpeta de la biblioteca de audio. `label` = categoría para lo que está en su raíz. */
+export interface SoundRoot {
+  path: string
+  kind: 'music' | 'sfx'
+  label: string
+  /** Solo los archivos sueltos de la raíz (p. ej. la carpeta Música de Windows, llena de otras cosas). */
+  shallow?: boolean
 }
 
 const AUDIO_FILE = /\.(mp3|wav|aac|m4a|flac|ogg|opus|wma)$/i
 
-/** Efectos de sonido de Daniel: todos los audios de la carpeta, con su subcarpeta como categoría. */
-export async function listSounds(root: string): Promise<SoundEntry[]> {
+/** Biblioteca de audio: los archivos de cada carpeta, con su subcarpeta como categoría. */
+export async function listSounds(roots: SoundRoot[]): Promise<SoundEntry[]> {
   const { readdir } = await import('node:fs/promises')
   const out: SoundEntry[] = []
-  async function walk(dir: string, category: string) {
+  const seen = new Set<string>()
+  async function walk(root: SoundRoot, dir: string, category: string) {
     let entries
     try {
       entries = await readdir(dir, { withFileTypes: true })
@@ -164,10 +176,57 @@ export async function listSounds(root: string): Promise<SoundEntry[]> {
     }
     for (const e of entries) {
       const full = join(dir, e.name)
-      if (e.isDirectory()) await walk(full, category ? `${category} / ${e.name}` : e.name)
-      else if (AUDIO_FILE.test(e.name)) out.push({ name: e.name.replace(/\.[^.]+$/, ''), path: full, category })
+      if (e.isDirectory()) {
+        if (!root.shallow) await walk(root, full, category ? `${category} / ${e.name}` : e.name)
+      } else if (AUDIO_FILE.test(e.name) && !seen.has(full.toLowerCase())) {
+        seen.add(full.toLowerCase())
+        out.push({ name: e.name.replace(/\.[^.]+$/, ''), path: full, category: category || root.label, kind: root.kind })
+      }
     }
   }
-  await walk(root, '')
+  for (const r of roots) await walk(r, r.path, '')
   return out.sort((a, b) => a.category.localeCompare(b.category, 'es') || a.name.localeCompare(b.name, 'es'))
+}
+
+export interface SoundMeta {
+  duration: number
+  /** Carátula incrustada en el archivo (si tiene), ya extraída a la caché. */
+  cover: string | null
+}
+
+const metaCache = new Map<string, Promise<SoundMeta>>()
+let metaRunning = 0
+const metaQueue: (() => void)[] = []
+
+/** Duración y carátula de un audio. De a tres a la vez para no saturar el disco. */
+export function soundMeta(path: string): Promise<SoundMeta> {
+  let pr = metaCache.get(path)
+  if (pr) return pr
+  pr = new Promise<void>((go) => {
+    if (metaRunning < 3) go()
+    else metaQueue.push(go)
+  }).then(async () => {
+    metaRunning++
+    try {
+      const info = JSON.parse(
+        (await run(FFPROBE, ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type,disposition', '-of', 'json', path])).toString()
+      ) as { format?: { duration?: string }; streams?: { codec_type: string }[] }
+      const duration = Math.round(Number(info.format?.duration ?? 0) * US)
+      let cover: string | null = null
+      if (info.streams?.some((st) => st.codec_type === 'video')) {
+        await mkdir(cacheDir(), { recursive: true })
+        const out = join(cacheDir(), `${cacheKey(path)}-cover.jpg`)
+        if (!existsSync(out)) await run(FFMPEG, ['-v', 'error', '-y', '-i', path, '-an', '-frames:v', '1', '-vf', 'scale=96:96:force_original_aspect_ratio=increase,crop=96:96', out])
+        cover = out
+      }
+      return { duration, cover }
+    } catch {
+      return { duration: 0, cover: null }
+    } finally {
+      metaRunning--
+      metaQueue.shift()?.()
+    }
+  })
+  metaCache.set(path, pr)
+  return pr
 }

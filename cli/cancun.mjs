@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 
 const APP_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const INFO = join(process.env.APPDATA ?? '', 'Cancun', 'bridge.json')
+const INFO = join(process.env.APPDATA ?? '', process.env.CANCUN_PROFILE ? `Cancun-${process.env.CANCUN_PROFILE}` : 'Cancun', 'bridge.json')
 const US = 1_000_000
 // Campos de las operaciones que son tiempos (se convierten de segundos a µs).
 const TIME_FIELDS = new Set(['start', 'end', 'duration', 'sourceIn', 'time', 'at', 'fadeIn', 'fadeOut', 'delta'])
@@ -75,7 +75,12 @@ Propiedades (updateClip con parche parcial)
     {"crop":{"left":0,"top":0,"right":0,"bottom":0}}
     {"color":{"adjust":{"brightness":0,"contrast":0,"saturation":0,"exposure":0,"temperature":0,"tint":0,"highlights":0,"shadows":0,"sharpen":0,"vignette":0}}}  (-1..1)
     {"background":{"mode":"none|auto|chroma","feather":0.3,"shrink":0,"chroma":{"color":"#00ff00","intensity":0.4,"shadow":0.1}}}   auto = quitar fondo con IA
-    {"retouch":{"smooth":0.5,"removeBlemishes":0.3,"whiten":0.3,"evenTone":0.2}}
+    {"retouch":{...}}  retoque como CapCut (casillas skin/face/features/body activan cada sección):
+        piel 0..1: smooth whiten removeBlemishes evenTone smileLines darkCircles, skinTone:"#d9a47f"|null, skinToneAmount
+        rostro -1..1: faceSmall faceSlim faceWide hairline
+        rasgos -1..1: eyeSize eyeDistance eyeHeight noseSize noseWidth noseBridge noseHeight mouthSize smile lips browThick browHeight
+                0..1: eyeBright teeth (blanqueamiento dental) browNatural
+        cuerpo -1..1: slim head neck arms bodyWidth waist torso hips
     {"mask":{"shape":"none|linear|mirror|circle|rectangle|heart|star","x":0,"y":0,"width":0.6,"height":0.6,"rotation":0,"feather":0.05,"invert":false}}
     {"light":{"enabled":true,"color":"#ffd9a8","intensity":0.5,"x":-0.4,"y":-0.4,"radius":0.8,"subjectOnly":true}}
     {"animations":{"in":{"name":"zoomIn","duration":0.5},"out":null,"combo":null}}

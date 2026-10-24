@@ -3,7 +3,8 @@
 // (r = persona, g = piel). Todo se combina en la GPU: leer las máscaras a memoria
 // costaba ~60 ms por cuadro y era el cuello de botella de la exportación.
 
-import { FilesetResolver, ImageSegmenter } from '@mediapipe/tasks-vision'
+import { FaceLandmarker, FilesetResolver, ImageSegmenter, PoseLandmarker } from '@mediapipe/tasks-vision'
+import { FACE_POINTS } from '@shared/retouch'
 
 const BACKGROUND = 0
 const BODY_SKIN = 2
@@ -12,6 +13,11 @@ const FACE_SKIN = 3
 const TEMPORAL = 0.65
 
 let segmenter: ImageSegmenter | null = null
+let fileset: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>> | null = null
+let models: { face: string; pose: string } | null = null
+// Detectores de cara y cuerpo: se crean la primera vez que un clip los necesita.
+let face: Promise<FaceLandmarker> | null = null
+let pose: Promise<PoseLandmarker> | null = null
 let canvas: OffscreenCanvas
 let gl: WebGL2RenderingContext
 let program: WebGLProgram
@@ -83,6 +89,8 @@ interface InitMsg {
   type: 'init'
   wasm: string
   model: string
+  faceModel: string
+  poseModel: string
 }
 
 interface SegMsg {
@@ -91,14 +99,46 @@ interface SegMsg {
   key: string
   frame: ImageBitmap
   reset: boolean
+  /** Cuadro en su proporción (no aplastado a 256×256) para detectar cara y cuerpo. */
+  full: ImageBitmap | null
+  wantFace: boolean
+  wantPose: boolean
 }
 
-self.onmessage = async (e: MessageEvent<InitMsg | SegMsg | { type: 'forget'; key: string }>) => {
+function getFace(): Promise<FaceLandmarker> {
+  face ??= FaceLandmarker.createFromOptions(fileset!, {
+    baseOptions: { modelAssetPath: models!.face, delegate: 'GPU' },
+    // Mismo lienzo (y contexto WebGL) que la segmentación: sin él, en un worker cae a CPU.
+    canvas,
+    runningMode: 'VIDEO',
+    numFaces: 1
+  })
+  return face
+}
+
+function getPose(): Promise<PoseLandmarker> {
+  pose ??= PoseLandmarker.createFromOptions(fileset!, {
+    baseOptions: { modelAssetPath: models!.pose, delegate: 'GPU' },
+    canvas,
+    runningMode: 'VIDEO',
+    numPoses: 1
+  })
+  return pose
+}
+
+// Un mensaje a la vez: los detectores en modo video exigen tiempos siempre crecientes.
+let queue: Promise<void> = Promise.resolve()
+self.onmessage = (e: MessageEvent<InitMsg | SegMsg | { type: 'forget'; key: string }>) => {
+  queue = queue.then(() => handle(e)).catch(() => undefined)
+}
+
+async function handle(e: MessageEvent<InitMsg | SegMsg | { type: 'forget'; key: string }>) {
   const msg = e.data
   if (msg.type === 'init') {
     try {
       canvas = new OffscreenCanvas(256, 256)
-      const fileset = await FilesetResolver.forVisionTasks(msg.wasm)
+      fileset = await FilesetResolver.forVisionTasks(msg.wasm)
+      models = { face: msg.faceModel, pose: msg.poseModel }
       segmenter = await ImageSegmenter.createFromOptions(fileset, {
         baseOptions: { modelAssetPath: msg.model, delegate: 'GPU' },
         canvas,
@@ -160,5 +200,35 @@ self.onmessage = async (e: MessageEvent<InitMsg | SegMsg | { type: 'forget'; key
   gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, w, h)
   const bitmap = canvas.transferToImageBitmap()
   for (const m of masks) m.close()
-  postMessage({ type: 'mask', id: msg.id, key: msg.key, bitmap, ms: performance.now() - t0 }, { transfer: [bitmap] })
+
+  // Puntos de la cara y del cuerpo (en coordenadas 0..1 de la imagen).
+  let facePts: Float32Array | null = null
+  let posePts: Float32Array | null = null
+  if (msg.full) {
+    try {
+      if (msg.wantFace) {
+        const r = (await getFace()).detectForVideo(msg.full, lastTs)
+        const lm = r.faceLandmarks[0]
+        if (lm && lm.length >= 474) {
+          facePts = new Float32Array(FACE_POINTS.length * 2)
+          FACE_POINTS.forEach((p, i) => {
+            facePts![i * 2] = lm[p].x
+            facePts![i * 2 + 1] = lm[p].y
+          })
+        }
+      }
+      if (msg.wantPose) {
+        const r = (await getPose()).detectForVideo(msg.full, lastTs)
+        const lm = r.landmarks[0]
+        if (lm) {
+          posePts = new Float32Array(33 * 3)
+          lm.forEach((p, i) => posePts!.set([p.x, p.y, p.visibility ?? 1], i * 3))
+        }
+      }
+    } catch (err) {
+      postMessage({ type: 'warn', error: err instanceof Error ? err.message : String(err) })
+    }
+    msg.full.close()
+  }
+  postMessage({ type: 'mask', id: msg.id, key: msg.key, bitmap, face: facePts, pose: posePts, ms: performance.now() - t0 }, { transfer: [bitmap] })
 }

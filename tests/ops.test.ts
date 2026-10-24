@@ -189,3 +189,21 @@ test('addSubtitles crea la pista "Subtítulos" y la reemplaza al regenerar', () 
   assert.equal(tracks[0].clips.length, 1)
   assert.equal(tracks[0].clips[0].type === 'text' && tracks[0].clips[0].text, 'uno')
 })
+
+test('retoque: sin puntos no hay deformación; con cara, los ojos más grandes generan escalas', async () => {
+  const { retouchOps, FACE_POINTS, WARP_SCALE } = await import('../src/shared/retouch.ts')
+  const { defaultRetouch } = await import('../src/shared/project.ts')
+  const r = { ...defaultRetouch(), eyeSize: 1 }
+  assert.equal(retouchOps(r, null, 16 / 9).warpN, 0)
+  const face = new Float32Array(FACE_POINTS.length * 2)
+  FACE_POINTS.forEach((_, i) => {
+    face[i * 2] = 0.4 + (i % 7) * 0.03
+    face[i * 2 + 1] = 0.3 + Math.floor(i / 7) * 0.05
+  })
+  const ops = retouchOps(r, { face, pose: null }, 16 / 9)
+  assert.equal(ops.warpN, 2)
+  assert.equal(ops.warpB[0], WARP_SCALE)
+  assert.ok(ops.warpB[1] > 0)
+  // Con la sección apagada no se deforma nada.
+  assert.equal(retouchOps({ ...r, features: false }, { face, pose: null }, 16 / 9).warpN, 0)
+})

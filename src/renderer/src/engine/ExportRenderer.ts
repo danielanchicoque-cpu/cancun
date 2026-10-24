@@ -6,7 +6,7 @@ import { type MediaClip, type Project, US, clipEnd } from '@shared/project'
 import { layersAt } from '@shared/timeline'
 import { api } from '../api'
 import { Compositor, type FrameSource, type SegSource } from '../gl/Compositor'
-import { Segmenter, needsSegmentation } from './Segmenter'
+import { type SegResult, Segmenter, needsSegmentation, segNeeds } from './Segmenter'
 import { type FrameProvider, openProvider } from './sources'
 import { decodeStats } from './ClipDecoder'
 
@@ -67,7 +67,7 @@ export async function renderJob(job: RenderJob, send: (data: Uint8Array, index: 
   let chain: Promise<void> = Promise.resolve()
   // Máscara pedida para el cuadro anterior de cada clip: se usa una con un cuadro de
   // retraso para que el worker segmente en paralelo con el render (no se nota).
-  const pendingMask = new Map<string, Promise<ImageBitmap>>()
+  const pendingMask = new Map<string, Promise<SegResult>>()
   try {
     for (let n = 0; n < frames; n++) {
       if (cancelled.has(job.jobId)) throw new Error('Exportación cancelada')
@@ -89,9 +89,9 @@ export async function renderJob(job: RenderJob, send: (data: Uint8Array, index: 
         sources.set(f.clip.id, src)
         if (segmenter && needsSegmentation(f.clip)) {
           const prev = pendingMask.get(f.clip.id)
-          const { mask } = await segmenter.submit(f.clip.id, src as TexImageSource)
-          pendingMask.set(f.clip.id, mask)
-          segs.set(f.clip.id, await (prev ?? mask))
+          const { result } = await segmenter.submit(f.clip.id, src as TexImageSource, segNeeds(f.clip))
+          pendingMask.set(f.clip.id, result)
+          segs.set(f.clip.id, await (prev ?? result))
           lap('seg')
         }
       }

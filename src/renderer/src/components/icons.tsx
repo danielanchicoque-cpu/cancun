@@ -5,7 +5,7 @@ const paths: Record<string, string> = {
   audio: 'M9 18V5l11-2v13M9 18a3 3 0 1 1-6 0 3 3 0 0 1 6 0zM20 16a3 3 0 1 1-6 0 3 3 0 0 1 6 0z',
   text: 'M4 7V4h16v3M9 20h6M12 4v16',
   captions: 'M3 5h18v14H3zM7 11h4M13 11h4M7 15h10',
-  transitions: 'M4 4l8 8-8 8M12 4l8 8-8 8',
+  transitions: 'M4 5v14l8-7zM20 5v14l-8-7z',
   adjust: 'M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12M20 18h0M16 4v4M10 10v4M18 16v4',
   play: 'M7 4l13 8-13 8z',
   pause: 'M7 4h4v16H7zM13 4h4v16h-4z',

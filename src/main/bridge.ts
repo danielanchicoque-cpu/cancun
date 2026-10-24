@@ -17,7 +17,7 @@ export interface BridgeRequest {
 
 export type BridgeHandler = (method: string, params: Record<string, unknown>) => Promise<unknown>
 
-export const bridgeInfoPath = (): string => join(app.getPath('appData'), 'Cancun', 'bridge.json')
+export const bridgeInfoPath = (): string => join(app.getPath('userData'), 'bridge.json')
 
 export async function startBridge(handle: BridgeHandler): Promise<() => void> {
   const token = randomBytes(24).toString('hex')

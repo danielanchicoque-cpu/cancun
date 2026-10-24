@@ -1,21 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { Media } from '@shared/project'
+import { type Media, US } from '@shared/project'
 import { useEditor } from '../store'
 import { api, mediaUrl, type LutEntry, type SoundEntry, type SubtitleProgress } from '../api'
 import { useFilmstrip } from '../assets'
 import { DEFAULT_TRANSITION_US, addToTimeline, autoSubtitles, applyTransition, importFiles, pickAndImport, targetClip, toast } from '../actions'
 import { shortTime } from '../format'
 import { EFFECTS } from '../gl/shaders'
-import { THUMB_FRAMES, loadSamples, lutThumb, samplesReady, thumbFrames, thumbStill } from '../gl/thumbnails'
-
-/** Re-renderiza cuando las fotos de muestra terminan de cargar. */
-function useSamples(): boolean {
-  const [ready, setReady] = useState(samplesReady)
-  useEffect(() => {
-    if (!ready) void loadSamples().then(() => setReady(true))
-  }, [])
-  return ready
-}
+import { drawThumbFrame, loadSamples, lutThumb, requestStill } from '../gl/thumbnails'
 
 function LutThumb({ lut }: { lut: LutEntry }) {
   const [url, setUrl] = useState<string | null>(null)
@@ -201,40 +192,167 @@ function MediaBrowser() {
 /** Un reproductor compartido para escuchar los sonidos antes de usarlos. */
 const previewAudio = new Audio()
 
-function SoundRow({ sound, playing, onPlay }: { sound: SoundEntry; playing: boolean; onPlay: () => void }) {
+/** Color estable por nombre, para la portada de los audios sin carátula. */
+function hueOf(text: string): number {
+  let h = 0
+  for (let i = 0; i < text.length; i++) h = (h * 31 + text.charCodeAt(i)) % 360
+  return h
+}
+
+/** Duración y carátula, pedidas solo cuando la fila entra en pantalla. */
+function useSoundMeta(path: string, ref: React.RefObject<HTMLElement | null>) {
+  const [meta, setMeta] = useState<{ duration: number; cover: string | null } | null>(null)
+  useEffect(() => {
+    let alive = true
+    const io = new IntersectionObserver((entries) => {
+      if (!entries.some((e) => e.isIntersecting)) return
+      io.disconnect()
+      void api.soundMeta(path).then((m) => alive && setMeta(m))
+    })
+    if (ref.current) io.observe(ref.current)
+    return () => {
+      alive = false
+      io.disconnect()
+    }
+  }, [path])
+  return meta
+}
+
+function SoundCover({ sound, cover, playing }: { sound: SoundEntry; cover: string | null | undefined; playing: boolean }) {
+  const hue = hueOf(sound.category + sound.name)
+  return (
+    <div
+      className="sound-cover"
+      style={
+        cover
+          ? { backgroundImage: `url("${mediaUrl(cover)}")` }
+          : { background: `linear-gradient(135deg, hsl(${hue} 55% 42%), hsl(${(hue + 50) % 360} 60% 22%))` }
+      }
+    >
+      {!cover && <Icon name={sound.kind === 'music' ? 'audio' : 'volume'} size={18} />}
+      <span className={`play-badge ${playing ? 'on' : ''}`}>
+        <Icon name={playing ? 'pause' : 'play'} size={12} />
+      </span>
+    </div>
+  )
+}
+
+function SoundRow({
+  sound,
+  playing,
+  starred,
+  onPlay,
+  onStar
+}: {
+  sound: SoundEntry
+  playing: boolean
+  starred: boolean
+  onPlay: () => void
+  onStar: () => void
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  const meta = useSoundMeta(sound.path, ref)
   const add = async () => {
     const [m] = await importFiles([sound.path])
     if (m) addToTimeline(m, { start: useEditor.getState().time })
   }
   return (
     <div
+      ref={ref}
       className={`sound-row ${playing ? 'playing' : ''}`}
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData('application/x-cancun-path', sound.path)
         e.dataTransfer.effectAllowed = 'copy'
       }}
+      onClick={onPlay}
       onDoubleClick={add}
       title={sound.path}
     >
-      <button className="icon-btn" onClick={onPlay} title={playing ? 'Detener' : 'Escuchar'}>
-        <Icon name={playing ? 'stop' : 'play'} size={13} />
+      <SoundCover sound={sound} cover={meta?.cover} playing={playing} />
+      <div className="sound-text">
+        <span className="name">{sound.name}</span>
+        <span className="sub">
+          {sound.category}
+          {meta?.duration ? ` · ${shortTime(meta.duration)}` : ''}
+        </span>
+      </div>
+      <button
+        className={`icon-btn star-btn ${starred ? 'on' : ''}`}
+        title={starred ? 'Quitar de Tuyos' : 'Guardar en Tuyos'}
+        onClick={(e) => {
+          e.stopPropagation()
+          onStar()
+        }}
+      >
+        <Icon name="star" size={13} />
       </button>
-      <span className="name">{sound.name}</span>
-      <button className="icon-btn add-btn" title="Agregar en el cursor" onClick={add}>
-        <Icon name="plus" size={13} />
+      <button
+        className="icon-btn add-btn"
+        title="Agregar en el cursor"
+        onClick={(e) => {
+          e.stopPropagation()
+          void add()
+        }}
+      >
+        <Icon name="plus" size={14} />
       </button>
     </div>
   )
 }
 
+/** Barra de reproducción dentro del panel (como la de CapCut), con avance y búsqueda. */
+function MiniPlayer({ sound, onClose }: { sound: SoundEntry; onClose: () => void }) {
+  const [t, setT] = useState(0)
+  const [dur, setDur] = useState(0)
+  const [paused, setPaused] = useState(false)
+  useEffect(() => {
+    let raf = 0
+    const tick = () => {
+      setT(previewAudio.currentTime)
+      setDur(Number.isFinite(previewAudio.duration) ? previewAudio.duration : 0)
+      setPaused(previewAudio.paused)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [sound.path])
+  return (
+    <div className="mini-player">
+      <button className="icon-btn" onClick={() => (previewAudio.paused ? void previewAudio.play() : previewAudio.pause())}>
+        <Icon name={paused ? 'play' : 'pause'} size={14} />
+      </button>
+      <div className="mp-body">
+        <div className="mp-name">{sound.name}</div>
+        <div className="mp-row">
+          <span className="mp-time">{shortTime(t * US)}</span>
+          <input
+            type="range"
+            min={0}
+            max={dur || 1}
+            step={0.01}
+            value={t}
+            onChange={(e) => (previewAudio.currentTime = Number(e.target.value))}
+          />
+          <span className="mp-time">{shortTime(dur * US)}</span>
+        </div>
+      </div>
+      <button className="icon-btn" title="Cerrar" onClick={onClose}>
+        <Icon name="close" size={13} />
+      </button>
+    </div>
+  )
+}
+
+type AudioSection = 'music' | 'sfx' | 'import' | 'tuyos'
+
 function AudioBrowser() {
   const media = useEditor((s) => s.project!.media)
-  const [section, setSection] = useState<'sounds' | 'import' | 'tuyos'>('sounds')
+  const [section, setSection] = useState<AudioSection>(() => (localStorage.getItem('cancun.audioSection') as AudioSection) || 'sfx')
   const [sounds, setSounds] = useState<SoundEntry[] | null>(null)
   const [category, setCategory] = useState<string>('')
   const [query, setQuery] = useState('')
-  const [playing, setPlaying] = useState<string | null>(null)
+  const [playing, setPlaying] = useState<SoundEntry | null>(null)
   const drop = useFileDrop()
   const tuyos = useTuyos()
   const tuyosMedia = useProbed(tuyos.paths).filter((m) => m.kind === 'audio')
@@ -242,55 +360,89 @@ function AudioBrowser() {
 
   useEffect(() => {
     void api.listSounds().then(setSounds).catch(() => setSounds([]))
-    previewAudio.onended = () => setPlaying(null)
+    // Al terminar, la barra se queda (en pausa) para volver a escucharlo o moverse.
+    previewAudio.onended = null
     return () => previewAudio.pause()
   }, [])
 
-  const categories = useMemo(() => [...new Set((sounds ?? []).map((s) => s.category.split(' / ')[0]))], [sounds])
-  const shown = (sounds ?? []).filter(
-    (s) => (!category || s.category.split(' / ')[0] === category) && (!query || `${s.name} ${s.category}`.toLowerCase().includes(query.toLowerCase()))
-  )
+  const go = (sec: AudioSection, cat = '') => {
+    setSection(sec)
+    setCategory(cat)
+    localStorage.setItem('cancun.audioSection', sec)
+  }
+  const ofKind = (k: 'music' | 'sfx') => (sounds ?? []).filter((s) => s.kind === k)
+  const categoriesOf = (k: 'music' | 'sfx') => [...new Set(ofKind(k).map((s) => s.category.split(' / ')[0]))].filter(Boolean)
+  const library = section === 'music' || section === 'sfx'
+  const shown = library
+    ? ofKind(section).filter(
+        (s) => (!category || s.category.split(' / ')[0] === category) && (!query || `${s.name} ${s.category}`.toLowerCase().includes(query.toLowerCase()))
+      )
+    : []
 
   const play = (s: SoundEntry) => {
-    if (playing === s.path) {
-      previewAudio.pause()
-      setPlaying(null)
+    if (playing?.path === s.path) {
+      if (previewAudio.paused) void previewAudio.play()
+      else previewAudio.pause()
       return
     }
     previewAudio.src = mediaUrl(s.path)
     void previewAudio.play()
-    setPlaying(s.path)
+    setPlaying(s)
   }
 
   return (
     <div className="left-body">
       <div className="side-nav">
-        <button className={section === 'sounds' ? 'active' : ''} onClick={() => setSection('sounds')}>Efectos de sonido</button>
-        <button className={section === 'import' ? 'active' : ''} onClick={() => setSection('import')}>Importar</button>
-        <button className={section === 'tuyos' ? 'active' : ''} onClick={() => setSection('tuyos')}>Tuyos</button>
-      </div>
-      <div className="side-content" {...drop.props}>
-        {section === 'sounds' && (
-          <>
-            <div className="search">
-              <Icon name="search" size={13} />
-              <input placeholder="Buscar sonido" value={query} onChange={(e) => setQuery(e.target.value)} />
-            </div>
-            <div className="chips">
-              <button className={!category ? 'active' : ''} onClick={() => setCategory('')}>Todos</button>
-              {categories.filter(Boolean).map((c) => (
-                <button key={c} className={category === c ? 'active' : ''} onClick={() => setCategory(c)}>
+        {(['music', 'sfx'] as const).map((k) => (
+          <div key={k} className="nav-group">
+            <button className={section === k && !category ? 'active' : ''} onClick={() => go(k)}>
+              {k === 'music' ? 'Música' : 'Efectos de sonido'}
+            </button>
+            {section === k &&
+              categoriesOf(k).map((c) => (
+                <button key={c} className={`sub ${category === c ? 'active' : ''}`} onClick={() => go(k, c)}>
                   {c}
                 </button>
               ))}
+          </div>
+        ))}
+        <button className={section === 'import' ? 'active' : ''} onClick={() => go('import')}>Importar</button>
+        <button className={section === 'tuyos' ? 'active' : ''} onClick={() => go('tuyos')}>Tuyos</button>
+      </div>
+      <div className="side-content audio-content" {...drop.props}>
+        {library && (
+          <>
+            <div className="search">
+              <Icon name="search" size={13} />
+              <input placeholder={section === 'music' ? 'Buscar canción' : 'Buscar sonido'} value={query} onChange={(e) => setQuery(e.target.value)} />
             </div>
             {sounds === null && <div className="empty">Cargando tu biblioteca…</div>}
-            {sounds?.length === 0 && <div className="empty">No encontré la carpeta de efectos de sonido.</div>}
+            {sounds && shown.length === 0 && section === 'music' && (
+              <div className="empty">
+                Pon tus canciones en la carpeta Música de Cancun y aparecerán aquí.
+                <button className="btn" style={{ marginTop: 8 }} onClick={() => void api.openMusicDir()}>
+                  <Icon name="folder" size={12} /> Abrir carpeta de música
+                </button>
+              </div>
+            )}
+            {sounds && shown.length === 0 && section === 'sfx' && <div className="empty">No hay efectos de sonido en esta categoría.</div>}
             <div className="sound-list">
               {shown.slice(0, 400).map((s) => (
-                <SoundRow key={s.path} sound={s} playing={playing === s.path} onPlay={() => play(s)} />
+                <SoundRow
+                  key={s.path}
+                  sound={s}
+                  playing={playing?.path === s.path}
+                  starred={tuyos.paths.includes(s.path)}
+                  onPlay={() => play(s)}
+                  onStar={() => tuyos.toggle(s.path)}
+                />
               ))}
             </div>
+            {section === 'music' && shown.length > 0 && (
+              <button className="btn subtle" onClick={() => void api.openMusicDir()}>
+                <Icon name="folder" size={12} /> Agregar canciones (carpeta Música de Cancun)
+              </button>
+            )}
           </>
         )}
         {section === 'import' && (
@@ -313,6 +465,15 @@ function AudioBrowser() {
               <MediaTile key={m.path} media={m} inProject={Boolean(Object.values(media).find((x) => x.path === m.path))} starred onStar={() => tuyos.toggle(m.path)} />
             ))}
           </div>
+        )}
+        {playing && (
+          <MiniPlayer
+            sound={playing}
+            onClose={() => {
+              previewAudio.pause()
+              setPlaying(null)
+            }}
+          />
         )}
       </div>
     </div>
@@ -427,105 +588,176 @@ function TextBrowser() {
   )
 }
 
-/** Miniatura real (renderizada con el shader) que se anima al pasar el mouse. */
+/** Miniatura real (renderizada con el shader); se anima en vivo al pasar el mouse. */
 function AnimatedThumb({ kind, id }: { kind: 'transition' | 'effect'; id: string }) {
-  const [frame, setFrame] = useState<string>(() => thumbStill(kind, id))
-  const timer = useRef<ReturnType<typeof setInterval> | null>(null)
-  const stop = () => {
-    if (timer.current) clearInterval(timer.current)
-    timer.current = null
-    setFrame(thumbStill(kind, id))
-  }
-  useEffect(() => stop, [])
+  const [still, setStill] = useState<string | null>(null)
+  const [hover, setHover] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  // Solo se genera cuando la miniatura entra en pantalla.
+  useEffect(() => {
+    const el = ref.current!
+    let cancel = () => undefined as void
+    const io = new IntersectionObserver((entries) => {
+      if (!entries.some((e) => e.isIntersecting)) return
+      io.disconnect()
+      cancel = requestStill(kind, id, setStill)
+    })
+    io.observe(el)
+    return () => {
+      io.disconnect()
+      cancel()
+    }
+  }, [kind, id])
+  useEffect(() => {
+    if (!hover) return
+    const ctx = canvasRef.current!.getContext('2d')!
+    let raf = 0
+    const t0 = performance.now()
+    const loop = () => {
+      drawThumbFrame(kind, id, ((performance.now() - t0) / 1200) % 1, ctx)
+      raf = requestAnimationFrame(loop)
+    }
+    void loadSamples().then(() => (raf = requestAnimationFrame(loop)))
+    return () => cancelAnimationFrame(raf)
+  }, [hover, kind, id])
   return (
     <div
-      className="thumb"
-      style={{ backgroundImage: `url("${frame}")`, backgroundSize: 'cover' }}
-      onPointerEnter={() => {
-        const frames = thumbFrames(kind, id)
-        let i = 0
-        timer.current = setInterval(() => setFrame(frames[i++ % THUMB_FRAMES]), 70)
-      }}
-      onPointerLeave={stop}
-    />
+      ref={ref}
+      className="thumb square"
+      style={still ? { backgroundImage: `url("${still}")` } : undefined}
+      onPointerEnter={() => setHover(true)}
+      onPointerLeave={() => setHover(false)}
+    >
+      {hover && <canvas ref={canvasRef} width={160} height={160} />}
+    </div>
   )
 }
 
-function TransitionBrowser() {
-  const ready = useSamples()
-  const [group, setGroup] = useState('')
-  const groups = [...new Set(TRANSITIONS.map((t) => t.group))]
-  const apply = (kind: (typeof TRANSITIONS)[number]['kind']) => {
-    const p = useEditor.getState().project!
-    const clip = targetClip(p)
-    if (!clip) return toast('Selecciona un clip de la pista principal (o pon el cursor sobre uno)', true)
-    applyTransition(clip.id, { kind, duration: clip.transition?.duration ?? DEFAULT_TRANSITION_US })
+// --- Favoritos (por tipo), guardados en este equipo ------------------------------------
+function useFavorites(kind: string): [Set<string>, (id: string) => void] {
+  const key = `cancun.fav.${kind}`
+  const [favs, setFavs] = useState<Set<string>>(() => {
+    try {
+      return new Set(JSON.parse(localStorage.getItem(key) ?? '[]') as string[])
+    } catch {
+      return new Set()
+    }
+  })
+  const toggle = (id: string) =>
+    setFavs((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      try {
+        localStorage.setItem(key, JSON.stringify([...next]))
+      } catch {
+        // Sin almacenamiento: los favoritos duran esta sesión.
+      }
+      return next
+    })
+  return [favs, toggle]
+}
+
+interface CatalogItem {
+  id: string
+  label: string
+  group: string
+}
+
+/**
+ * Catálogo estilo CapCut: categorías a la izquierda (con Favoritos), cuadrícula de
+ * miniaturas cuadradas a la derecha, estrella para marcar favoritos.
+ */
+function CatalogBrowser({
+  kind,
+  items,
+  dragType,
+  onPick,
+  hint
+}: {
+  kind: 'transition' | 'effect'
+  items: CatalogItem[]
+  dragType: string
+  onPick: (id: string) => void
+  hint: string
+}) {
+  const navKey = `cancun.nav.${kind}`
+  const groups = [...new Set(items.map((i) => i.group))]
+  const [group, setGroup] = useState(() => localStorage.getItem(navKey) ?? '')
+  const [favs, toggleFav] = useFavorites(kind)
+  const choose = (g: string) => {
+    setGroup(g)
+    localStorage.setItem(navKey, g)
   }
+  const shown = items.filter((i) => (group === '★' ? favs.has(i.id) : !group || i.group === group))
   return (
-    <div className="side-content">
-      <div className="chips">
-        <button className={!group ? 'active' : ''} onClick={() => setGroup('')}>Todas</button>
+    <div className="left-body">
+      <div className="side-nav">
+        <button className={group === '★' ? 'active' : ''} onClick={() => choose('★')}>
+          Favoritos
+        </button>
+        <button className={!group ? 'active' : ''} onClick={() => choose('')}>
+          {kind === 'transition' ? 'Todas' : 'Todos'}
+        </button>
         {groups.map((g) => (
-          <button key={g} className={group === g ? 'active' : ''} onClick={() => setGroup(g)}>
+          <button key={g} className={group === g ? 'active' : ''} onClick={() => choose(g)}>
             {g}
           </button>
         ))}
       </div>
-      <div className="asset-grid">
-        {TRANSITIONS.filter((t) => !group || t.group === group).map((t) => (
-          <div
-            key={t.kind}
-            className="asset"
-            draggable
-            onDragStart={(e) => e.dataTransfer.setData('application/x-cancun-transition', t.kind)}
-            onClick={() => apply(t.kind)}
-            title="Clic: aplicar al clip seleccionado · Arrastrar: soltar entre dos clips"
-          >
-            <AnimatedThumb key={`${t.kind}-${ready}`} kind="transition" id={t.kind} />
-            <div className="label">{t.label}</div>
-          </div>
-        ))}
+      <div className="side-content">
+        <div className="catalog-title">{group === '★' ? 'Favoritos' : group || (kind === 'transition' ? 'Todas las transiciones' : 'Todos los efectos')}</div>
+        {group === '★' && shown.length === 0 && <div className="hint">Marca con la estrella las que más uses y aparecerán aquí.</div>}
+        <div className="asset-grid square">
+          {shown.map((i) => (
+            <div
+              key={i.id}
+              className="asset"
+              draggable
+              onDragStart={(e) => e.dataTransfer.setData(dragType, i.id)}
+              onClick={() => onPick(i.id)}
+              title={hint}
+            >
+              <AnimatedThumb kind={kind} id={i.id} />
+              <button
+                className={`fav ${favs.has(i.id) ? 'on' : ''}`}
+                title={favs.has(i.id) ? 'Quitar de favoritos' : 'Agregar a favoritos'}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  toggleFav(i.id)
+                }}
+              >
+                <Icon name="star" size={12} />
+              </button>
+              <div className="label">{i.label}</div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )
 }
 
+function TransitionBrowser() {
+  const items = useMemo(() => TRANSITIONS.map((t) => ({ id: t.kind, label: t.label, group: t.group })), [])
+  const apply = (kind: string) => {
+    const p = useEditor.getState().project!
+    const clip = targetClip(p)
+    if (!clip) return toast('Selecciona un clip de la pista principal (o pon el cursor sobre uno)', true)
+    applyTransition(clip.id, { kind: kind as (typeof TRANSITIONS)[number]['kind'], duration: clip.transition?.duration ?? DEFAULT_TRANSITION_US })
+  }
+  return <CatalogBrowser kind="transition" items={items} dragType="application/x-cancun-transition" onPick={apply} hint="Clic: aplicar al clip seleccionado · Arrastrar: soltar entre dos clips" />
+}
+
 function EffectBrowser() {
-  const ready = useSamples()
-  const [group, setGroup] = useState('')
-  const groups = [...new Set(EFFECTS.map((e) => e.group))]
+  const items = useMemo(() => EFFECTS.map((e) => ({ id: e.id, label: e.label, group: e.group })), [])
   const add = (id: string) => {
     const s = useEditor.getState()
     const [created] = s.dispatch({ op: 'addEffect', effect: id, start: s.time })
     if (created) s.select(created)
   }
-  return (
-    <div className="side-content">
-      <div className="chips">
-        <button className={!group ? 'active' : ''} onClick={() => setGroup('')}>Todos</button>
-        {groups.map((g) => (
-          <button key={g} className={group === g ? 'active' : ''} onClick={() => setGroup(g)}>
-            {g}
-          </button>
-        ))}
-      </div>
-      <div className="hint" style={{ marginBottom: 8 }}>Los efectos van en su propia pista y afectan todo lo que tienen debajo.</div>
-      <div className="asset-grid">
-        {EFFECTS.filter((e) => !group || e.group === group).map((e) => (
-          <div
-            key={e.id}
-            className="asset"
-            draggable
-            onDragStart={(ev) => ev.dataTransfer.setData('application/x-cancun-effect', e.id)}
-            onClick={() => add(e.id)}
-          >
-            <AnimatedThumb key={`${e.id}-${ready}`} kind="effect" id={e.id} />
-            <div className="label">{e.label}</div>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
+  return <CatalogBrowser kind="effect" items={items} dragType="application/x-cancun-effect" onPick={add} hint="Clic: agregar en el cursor · Arrastrar a la línea de tiempo. Afecta todo lo que tiene debajo." />
 }
 
 function LutBrowser() {

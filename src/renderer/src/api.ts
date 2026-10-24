@@ -8,6 +8,8 @@ export interface ProjectSummary {
   name: string
   updatedAt: string
   duration: number
+  cover?: string
+  coverVersion?: number
 }
 
 export interface LutEntry {
@@ -20,6 +22,7 @@ export interface SoundEntry {
   name: string
   path: string
   category: string
+  kind: 'music' | 'sfx'
 }
 
 export interface LoadedLut {
@@ -59,6 +62,7 @@ export const api = {
   loadProject: (id: string): Promise<Project> => c().projects.load(id),
   saveProject: (p: Project): Promise<void> => c().projects.save(p),
   deleteProject: (id: string): Promise<void> => c().projects.remove(id),
+  saveCover: (id: string, dataUrl: string): Promise<void> => c().projects.cover(id, dataUrl),
 
   pickMedia: (): Promise<string[]> => c().media.pick(),
   probe: (paths: string[]): Promise<Media[]> => c().media.probe(paths),
@@ -67,6 +71,8 @@ export const api = {
   reverse: (path: string): Promise<string> => c().media.reverse(path),
   pathOf: (f: File): string => c().media.pathOf(f),
   listSounds: (): Promise<SoundEntry[]> => c().sounds.list(),
+  soundMeta: (path: string): Promise<{ duration: number; cover: string | null }> => c().sounds.meta(path),
+  openMusicDir: (): Promise<void> => c().sounds.openMusicDir(),
 
   listLuts: (): Promise<LutEntry[]> => c().luts.list(),
   syncLuts: (): Promise<number> => c().luts.sync(),
@@ -84,6 +90,8 @@ export const api = {
 
   chatSend: (text: string, context: unknown): Promise<void> => c().chat.send(text, context),
   chatStop: (): Promise<void> => c().chat.stop(),
+  claudeStatus: (): Promise<{ installed: boolean; loggedIn: boolean; email?: string }> => c().chat.status(),
+  claudeLogin: (): Promise<void> => c().chat.login(),
   chatReset: (): Promise<void> => c().chat.reset(),
   onChatEvent: (cb: (e: ChatEvent) => void): (() => void) => c().chat.onEvent(cb as never)
 }

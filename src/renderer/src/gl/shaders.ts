@@ -36,6 +36,16 @@ uniform bool uRemoveBg;
 uniform float uBgFeather;
 uniform float uBgShrink;
 uniform vec4 uRetouch;         // suavizar, blanquear, imperfecciones, tono uniforme
+uniform vec4 uSkinTone;        // rgb del tono elegido, cantidad (0 = natural)
+// Retoque de rostro y cuerpo: deformaciones locales y zonas de tono (ver shared/retouch.ts).
+// Coordenadas en uv de la textura con x multiplicada por uAspect.
+uniform int uWarpN;
+uniform vec4 uWarpA[24];       // centro, radios
+uniform vec4 uWarpB[24];       // tipo (0 escala, 1 mover), a, b
+uniform int uToneN;
+uniform vec4 uToneA[10];
+uniform vec4 uToneB[10];       // tipo, cantidad, extra
+uniform float uAspect;
 // Máscara: forma (0 nada, 1 lineal, 2 espejo, 3 círculo, 4 rectángulo, 5 corazón, 6 estrella)
 uniform int uMaskShape;
 uniform vec4 uMaskRect;        // centro x,y (-1..1), ancho, alto (fracción)
@@ -134,37 +144,144 @@ float refinedPerson(vec2 uv, vec3 c) {
   return sum / max(wsum, 1e-4);
 }
 
+// YCbCr (BT.709) para tocar la luz sin mover el color, y al revés.
+vec3 toYcc(vec3 c) {
+  float y = dot(c, vec3(0.2126, 0.7152, 0.0722));
+  return vec3(y, (c.b - y) * 0.5389, (c.r - y) * 0.635);
+}
+vec3 fromYcc(vec3 v) {
+  float r = v.x + v.z / 0.635;
+  float b = v.x + v.y / 0.5389;
+  float g = (v.x - 0.2126 * r - 0.0722 * b) / 0.7152;
+  return vec3(r, g, b);
+}
+
+// Promedio bilateral (vecinos parecidos, respeta bordes) con radio en píxeles.
+vec3 bilateral(vec2 uv, vec3 c, float radius, float sharp) {
+  vec3 sum = vec3(0.0);
+  float wsum = 0.0;
+  for (int i = -3; i <= 3; i++) {
+    for (int j = -3; j <= 3; j++) {
+      vec2 o = vec2(float(i), float(j)) * radius / 3.0;
+      vec3 s = texture(uSrc, uv + o * uTexel).rgb;
+      float w = exp(-dot(o, o) / (2.0 * radius * radius)) * exp(-dot(s - c, s - c) * sharp);
+      sum += s * w;
+      wsum += w;
+    }
+  }
+  return sum / wsum;
+}
+
 vec3 retouch(vec2 uv, vec3 c, float skin) {
   if (skin <= 0.001) return c;
   float smoothAmt = uRetouch.x;
   if (smoothAmt > 0.0 || uRetouch.z > 0.0) {
-    // Filtro bilateral: promedia vecinos parecidos (piel) y respeta bordes (ojos, boca).
-    vec3 sum = vec3(0.0);
-    float wsum = 0.0;
-    float radius = 1.0 + 6.0 * max(smoothAmt, uRetouch.z * 0.6);
-    for (int i = -3; i <= 3; i++) {
-      for (int j = -3; j <= 3; j++) {
-        vec2 o = vec2(float(i), float(j)) * radius / 3.0;
-        vec3 s = texture(uSrc, uv + o * uTexel).rgb;
-        float w = exp(-dot(o, o) / (2.0 * radius * radius)) * exp(-dot(s - c, s - c) * 60.0);
-        sum += s * w;
-        wsum += w;
-      }
-    }
-    vec3 blurred = sum / wsum;
-    float amt = clamp(smoothAmt * 0.9 + uRetouch.z * 0.5, 0.0, 1.0);
-    c = mix(c, blurred, amt * skin);
+    // Solo se suaviza la luz (la textura de la piel); el color queda igual, así el tono
+    // de la piel (y el del LUT) no cambia al suavizar.
+    vec3 blurred = bilateral(uv, c, 1.0 + 6.0 * max(smoothAmt, uRetouch.z * 0.7), 55.0);
+    vec3 a = toYcc(c);
+    vec3 b = toYcc(blurred);
+    float amt = clamp(smoothAmt * 0.85 + uRetouch.z * 0.5, 0.0, 1.0) * skin;
+    a.x = mix(a.x, b.x, amt);
+    a.yz = mix(a.yz, b.yz, amt * 0.35);
+    c = fromYcc(a);
   }
   if (uRetouch.w > 0.0) {
-    // Tono uniforme: acerca el color de la piel a su tono medio, sin tocar la luz.
-    vec3 avg = textureLod(uSrc, uv, 4.0).rgb;
-    float l = luma(c);
-    vec3 target = avg * (l / max(luma(avg), 0.001));
-    c = mix(c, target, uRetouch.w * 0.6 * skin);
+    // Tono uniforme: acerca el color (no la luz) de la piel a su tono medio.
+    vec3 a = toYcc(c);
+    vec3 avg = toYcc(textureLod(uSrc, uv, 4.0).rgb);
+    a.yz = mix(a.yz, avg.yz, uRetouch.w * 0.6 * skin);
+    c = fromYcc(a);
   }
   if (uRetouch.y > 0.0) {
-    c = mix(c, 1.0 - (1.0 - c) * (1.0 - 0.35 * uRetouch.y), skin);
-    c = mix(c, vec3(luma(c)), 0.12 * uRetouch.y * skin);
+    // Blanqueamiento natural: sube la luz con una curva suave (más en los medios que en
+    // las luces) y quita apenas un poco de saturación; sin lavar a gris.
+    vec3 a = toYcc(c);
+    float k = 0.32 * uRetouch.y * skin;
+    a.x = a.x + k * a.x * (1.0 - a.x) * 1.6;
+    a.yz *= 1.0 - 0.18 * k;
+    c = fromYcc(a);
+  }
+  if (uSkinTone.w > 0.0) {
+    // Tono de piel elegido: lleva el color de la piel hacia el de la muestra.
+    vec3 a = toYcc(c);
+    vec3 t = toYcc(uSkinTone.rgb);
+    a.yz = mix(a.yz, t.yz, uSkinTone.w * 0.7 * skin);
+    c = fromYcc(a);
+  }
+  return c;
+}
+
+vec2 toAsp(vec2 uv) { return vec2(uv.x * uAspect, uv.y); }
+
+// Deformaciones (licuar): para cada punto de salida se busca de dónde viene en la fuente.
+vec2 warpUv(vec2 uv) {
+  if (uWarpN == 0) return uv;
+  vec2 q = toAsp(uv);
+  vec2 src = q;
+  for (int i = 0; i < 24; i++) {
+    if (i >= uWarpN) break;
+    vec4 A = uWarpA[i];
+    vec4 B = uWarpB[i];
+    vec2 d = (q - A.xy) / A.zw;
+    float r2 = dot(d, d);
+    if (r2 >= 1.0) continue;
+    float w = (1.0 - r2) * (1.0 - r2);
+    if (B.x < 0.5) {
+      // Escala: agrandar (a, b > 0) o achicar alrededor del centro.
+      vec2 k = vec2(1.0) + B.yz * w;
+      src += (A.xy + (q - A.xy) / k) - q;
+    } else {
+      src -= B.yz * w;
+    }
+  }
+  return vec2(src.x / uAspect, src.y);
+}
+
+float zoneW(vec2 uv, vec4 A) {
+  vec2 d = (toAsp(uv) - A.xy) / A.zw;
+  float r2 = dot(d, d);
+  return r2 >= 1.0 ? 0.0 : (1.0 - r2) * (1.0 - r2);
+}
+
+// Zonas de tono del rostro: ojeras, líneas de sonrisa, dientes, brillo de ojos, cejas.
+vec3 faceTones(vec2 uv, vec3 c) {
+  for (int i = 0; i < 10; i++) {
+    if (i >= uToneN) break;
+    vec4 A = uToneA[i];
+    vec4 B = uToneB[i];
+    float w = zoneW(uv, A) * B.y;
+    if (w <= 0.0) continue;
+    int kind = int(B.x + 0.5);
+    vec3 a = toYcc(c);
+    if (kind == 1) {
+      // Ojera: iguala la luz (y algo del color) con la mejilla.
+      vec2 cheekUv = vec2(B.z / uAspect, B.w);
+      vec3 cheek = toYcc(bilateral(cheekUv, texture(uSrc, cheekUv).rgb, 4.0, 20.0));
+      vec3 soft = toYcc(bilateral(uv, c, 3.0, 40.0));
+      a.x = mix(a.x, max(soft.x, mix(soft.x, cheek.x, 0.85)), w * 0.9);
+      a.yz = mix(a.yz, cheek.yz, w * 0.45);
+    } else if (kind == 2) {
+      // Línea de sonrisa: suaviza el surco y lo aclara un poco.
+      vec3 soft = toYcc(bilateral(uv, c, 6.0, 25.0));
+      a.x = mix(a.x, max(a.x, soft.x), w * 0.9);
+      a.yz = mix(a.yz, soft.yz, w * 0.5);
+    } else if (kind == 3) {
+      // Dientes: lo claro y poco saturado dentro de la boca se blanquea.
+      float sat = length(a.yz);
+      float teeth = smoothstep(0.22, 0.45, a.x) * (1.0 - smoothstep(0.06, 0.16, sat));
+      a.yz *= 1.0 - 0.75 * w * teeth;
+      a.x += (1.0 - a.x) * 0.22 * w * teeth;
+    } else if (kind == 4) {
+      // Brillo de ojos: más contraste y un poco más de luz.
+      a.x = mix(a.x, clamp((a.x - 0.5) * 1.25 + 0.55, 0.0, 1.0), w * 0.8);
+    } else {
+      // Cejas "natural": rellena y define lo oscuro de la ceja.
+      float dark = 1.0 - smoothstep(0.15, 0.45, a.x);
+      a.x *= 1.0 - 0.35 * w * dark;
+      a.yz *= 1.0 - 0.2 * w * dark;
+    }
+    c = fromYcc(a);
   }
   return c;
 }
@@ -173,10 +290,12 @@ void main() {
   vec2 uv = vec2(mix(uCrop.x, 1.0 - uCrop.z, vUv.x), mix(uCrop.y, 1.0 - uCrop.w, vUv.y));
   if (uFlip.x > 0.5) uv.x = 1.0 - uv.x;
   if (uFlip.y > 0.5) uv.y = 1.0 - uv.y;
+  uv = warpUv(uv);
   vec4 src = texture(uSrc, uv);
   vec3 c = src.rgb;
   vec4 seg = uHasSeg ? texture(uSeg, uv) : vec4(1.0, 0.0, 0.0, 1.0);
-  if (uRetouch != vec4(0.0) && uHasSeg) c = retouch(uv, c, seg.g);
+  if ((uRetouch != vec4(0.0) || uSkinTone.w > 0.0) && uHasSeg) c = retouch(uv, c, seg.g);
+  if (uToneN > 0) c = faceTones(uv, c);
   if (uSharpen > 0.0) {
     vec3 blur = (
       texture(uSrc, uv + vec2(uTexel.x, 0.0)).rgb + texture(uSrc, uv - vec2(uTexel.x, 0.0)).rgb +

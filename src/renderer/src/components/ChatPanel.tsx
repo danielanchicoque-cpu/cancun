@@ -19,12 +19,38 @@ const SUGGESTIONS = [
   'Pon transiciones suaves entre todos los clips'
 ]
 
+const MODELS = [
+  { id: '', label: 'Modelo predeterminado' },
+  { id: 'claude-opus-5-5', label: 'Opus 5.5' },
+  { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
+  { id: 'claude-haiku-5-5', label: 'Haiku 5.5 (rápido)' },
+  { id: 'claude-fable-5-1', label: 'Fable 5.1' }
+]
+const MODEL_KEY = 'cancun.chatModel'
+
 let history: Message[] = []
+
+type Status = { installed: boolean; loggedIn: boolean; email?: string } | null
+
+/** Estado de la sesión de Claude; mientras no haya sesión, se vuelve a mirar cada pocos segundos. */
+function useClaudeStatus(): [Status, () => void] {
+  const [status, setStatus] = useState<Status>(null)
+  const check = () => void api.claudeStatus().then(setStatus).catch(() => setStatus({ installed: false, loggedIn: false }))
+  useEffect(check, [])
+  useEffect(() => {
+    if (!status || status.loggedIn) return
+    const t = setInterval(check, 4000)
+    return () => clearInterval(t)
+  }, [status?.loggedIn])
+  return [status, check]
+}
 
 export function ChatPanel() {
   const [messages, setMessages] = useState<Message[]>(history)
   const [text, setText] = useState('')
   const [busy, setBusy] = useState(false)
+  const [model, setModel] = useState(() => localStorage.getItem(MODEL_KEY) ?? '')
+  const [status] = useClaudeStatus()
   const listRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -55,7 +81,8 @@ export function ChatPanel() {
         projectId: s.project?.id,
         projectName: s.project?.name,
         time: s.time / US,
-        selection: s.selection
+        selection: s.selection,
+        model
       })
     } catch (err) {
       setMessages((m) => [...m, { role: 'error', text: err instanceof Error ? err.message : String(err) }])
@@ -83,6 +110,36 @@ export function ChatPanel() {
           <Icon name="close" size={14} />
         </button>
       </div>
+      <div className="chat-bar">
+        <select
+          value={model}
+          onChange={(e) => {
+            setModel(e.target.value)
+            localStorage.setItem(MODEL_KEY, e.target.value)
+          }}
+        >
+          {MODELS.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.label}
+            </option>
+          ))}
+        </select>
+        {status?.loggedIn && status.email && <span className="chat-account" title={status.email}>{status.email}</span>}
+      </div>
+      {status && !status.loggedIn && (
+        <div className="chat-login">
+          {status.installed ? (
+            <>
+              <p>Inicia sesión con tu cuenta de Claude para usarlo aquí. Se abre el navegador; si te pide un código, pégalo en la ventana que aparece.</p>
+              <button className="btn primary" onClick={() => void api.claudeLogin()}>
+                Iniciar sesión en Claude
+              </button>
+            </>
+          ) : (
+            <p>Para usar el chat, instala Claude Code desde claude.com/code y vuelve a abrir este panel.</p>
+          )}
+        </div>
+      )}
       <div className="chat-list" ref={listRef}>
         {messages.length === 0 && (
           <div className="chat-empty">

@@ -3,7 +3,8 @@ import { US } from '@shared/project'
 import { useEditor } from '../store'
 import { deleteSelection, duplicateSelection, onToast, paste, splitAtPlayhead, trimToPlayhead } from '../actions'
 import { LeftPanel } from './LeftPanel'
-import { Preview } from './Preview'
+import { Preview, getPlayer } from './Preview'
+import { api } from '../api'
 import { Inspector } from './Inspector'
 import { Timeline } from './Timeline'
 import { ExportDialog } from './ExportDialog'
@@ -38,6 +39,31 @@ function SaveIndicator() {
       {label}
     </span>
   )
+}
+
+/** Guarda un cuadro como portada del proyecto (para la lista del inicio) cada tanto y al salir. */
+function useCover() {
+  useEffect(() => {
+    let last: unknown = null
+    const save = () => {
+      const { project } = useEditor.getState()
+      const player = getPlayer()
+      if (!project || !player || project === last) return
+      last = project
+      try {
+        void api.saveCover(project.id, player.snapshot()).catch(() => undefined)
+      } catch {
+        // El lienzo todavía no está listo.
+      }
+    }
+    const t = setInterval(save, 20_000)
+    const first = setTimeout(save, 3000)
+    return () => {
+      clearInterval(t)
+      clearTimeout(first)
+      save()
+    }
+  }, [])
 }
 
 function useShortcuts() {
@@ -100,14 +126,39 @@ function useShortcuts() {
   }, [])
 }
 
+type Sizes = { left: number; right: number; timeline: number; chat: number; previewW: number }
+const DEFAULT_SIZES: Sizes = { left: 500, right: 360, timeline: 330, chat: 380, previewW: 520 }
+
+/** Cada vista (horizontal / vertical) recuerda sus propios tamaños de paneles. */
+function readSizes(layout: string): Sizes {
+  try {
+    return { ...DEFAULT_SIZES, ...(JSON.parse(localStorage.getItem(`cancun.sizes.${layout}`) ?? '{}') as Partial<Sizes>) }
+  } catch {
+    return DEFAULT_SIZES
+  }
+}
+
 export function Editor() {
   const name = useEditor((s) => s.project!.name)
   const layout = useEditor((s) => s.layout)
   const chatOpen = useEditor((s) => s.chatOpen)
   const [exporting, setExporting] = useState(false)
-  const [size, setSize] = useState({ left: 500, right: 360, timeline: 330, chat: 380, previewW: 520 })
+  const [size, setSize] = useState(() => readSizes(layout))
+  const [sizeLayout, setSizeLayout] = useState(layout)
+  if (sizeLayout !== layout) {
+    setSizeLayout(layout)
+    setSize(readSizes(layout))
+  }
+  useEffect(() => {
+    try {
+      localStorage.setItem(`cancun.sizes.${sizeLayout}`, JSON.stringify(size))
+    } catch {
+      // Sin almacenamiento: los tamaños solo duran esta sesión.
+    }
+  }, [size, sizeLayout])
   const [toastMsg, setToastMsg] = useState<{ msg: string; error: boolean } | null>(null)
   useShortcuts()
+  useCover()
   useEffect(() => onToast((msg, error) => setToastMsg(msg ? { msg, error } : null)), [])
 
   const dragLeft = useDrag((dx) => setSize((l) => ({ ...l, left: Math.max(300, Math.min(900, l.left + dx)) })))

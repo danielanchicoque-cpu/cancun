@@ -1,11 +1,15 @@
-// Miniaturas animadas de transiciones y efectos, dibujadas con los mismos shaders del
-// compositor sobre dos imágenes de muestra. Se generan bajo demanda y quedan en caché.
+// Miniaturas de transiciones y efectos, dibujadas con los mismos shaders del compositor
+// sobre fotos de muestra. Son cuadradas (como en CapCut). La imagen fija se genera en
+// segundo plano, de a pocas por cuadro, y se guarda entre sesiones; al pasar el mouse
+// se anima en vivo copiando el lienzo WebGL a la miniatura (sin codificar imágenes).
 
 import { mediaUrl } from '../api'
 import { EFFECTS, EFFECT_FS, QUAD_VS, TRANSITION_FS, TRANSITION_KINDS } from './shaders'
 
-const W = 192
-const H = 144
+const W = 160
+const H = 160
+/** Cambiar cuando cambien los shaders o las fotos: invalida las miniaturas guardadas. */
+const CACHE_VERSION = 'thumbs-v4'
 
 /** Fotos de muestra propias (generadas para Cancun) sobre las que se ven transiciones y efectos. */
 const SAMPLE_NAMES = ['chico-gafas', 'casa-blanca', 'mujer-sonrisa', 'auto-clasico', 'faro-isla', 'montana-nieve', 'ciudad-atardecer', 'retrato-nina'] as const
@@ -132,11 +136,14 @@ function setup() {
       if (!t) {
         const img = images.get(name)
         if (!img) return fallback[name.length % 2]
-        // Recorta la foto al formato de la miniatura.
+        // Recorta la foto al centro, al formato de la miniatura (sin deformarla).
         const c = document.createElement('canvas')
         c.width = W
         c.height = H
-        c.getContext('2d')!.drawImage(img, 0, 0, W, H)
+        const k = Math.max(W / img.naturalWidth, H / img.naturalHeight)
+        const sw = W / k
+        const sh = H / k
+        c.getContext('2d')!.drawImage(img, (img.naturalWidth - sw) / 2, (img.naturalHeight - sh) / 2, sw, sh, 0, 0, W, H)
         t = tex(c)
         cache.set(name, t)
       }
@@ -146,7 +153,7 @@ function setup() {
   return ctx
 }
 
-function draw(kind: 'transition' | 'effect', index: number, value: number): string {
+function draw(kind: 'transition' | 'effect', index: number, value: number): HTMLCanvasElement {
   const pair = PAIRS[index % PAIRS.length]
   const single = EFFECT_SAMPLES[index % EFFECT_SAMPLES.length]
   const c = setup()
@@ -174,35 +181,91 @@ function draw(kind: 'transition' | 'effect', index: number, value: number): stri
     gl.uniform1f(p.loc.uSpeed, 0.5)
   }
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
-  return c.canvas.toDataURL('image/jpeg', 0.8)
+  return c.canvas
 }
 
-const cache = new Map<string, string[]>()
+const indexOf = (kind: 'transition' | 'effect', id: string) =>
+  kind === 'transition' ? TRANSITION_KINDS.indexOf(id as never) : EFFECTS.findIndex((e) => e.id === id)
 
-/** Cuadros de la miniatura animada (el primero sirve de imagen fija). */
-export function thumbFrames(kind: 'transition' | 'effect', id: string): string[] {
-  const key = `${kind}:${id}:${images.size}`
-  let frames = cache.get(key)
-  if (!frames) {
-    const index = kind === 'transition' ? TRANSITION_KINDS.indexOf(id as never) : EFFECTS.findIndex((e) => e.id === id)
-    frames = Array.from({ length: THUMB_FRAMES }, (_, i) =>
-      kind === 'transition' ? draw(kind, index, 0.1 + (0.8 * i) / (THUMB_FRAMES - 1)) : draw(kind, index, (i / THUMB_FRAMES) * 2)
-    )
-    cache.set(key, frames)
-  }
-  return frames
+/** Valor del shader para la imagen fija y para el cuadro `u` (0..1) de la animación. */
+const STILL_VALUE = { transition: 0.3, effect: 0.6 }
+const animValue = (kind: 'transition' | 'effect', u: number) => (kind === 'transition' ? 0.08 + 0.84 * u : u * 2)
+
+/** Dibuja el cuadro `u` de la animación en un lienzo 2D (al pasar el mouse). */
+export function drawThumbFrame(kind: 'transition' | 'effect', id: string, u: number, target: CanvasRenderingContext2D) {
+  const src = draw(kind, indexOf(kind, id), animValue(kind, u))
+  target.drawImage(src, 0, 0, target.canvas.width, target.canvas.height)
 }
 
-/** Solo la imagen fija (más barata para pintar la cuadrícula completa). */
-export function thumbStill(kind: 'transition' | 'effect', id: string): string {
-  const key = `${kind}:${id}:still:${images.size}`
-  let url = cache.get(key)?.[0]
+// --- Imágenes fijas: memoria + localStorage, generadas de a pocas en segundo plano ----------
+const stills = new Map<string, string>()
+const pending = new Map<string, ((url: string) => void)[]>()
+const queue: { key: string; kind: 'transition' | 'effect'; id: string }[] = []
+let pumping = false
+
+const storageKey = (key: string) => `cancun.${CACHE_VERSION}.${key}`
+
+/** La imagen fija si ya existe (memoria o guardada), sin generar nada. */
+export function cachedStill(kind: 'transition' | 'effect', id: string): string | null {
+  const key = `${kind}:${id}`
+  let url = stills.get(key) ?? null
   if (!url) {
-    const index = kind === 'transition' ? TRANSITION_KINDS.indexOf(id as never) : EFFECTS.findIndex((e) => e.id === id)
-    url = draw(kind, index, kind === 'transition' ? 0.3 : 0.6)
-    cache.set(key, [url])
+    try {
+      url = localStorage.getItem(storageKey(key))
+    } catch {
+      url = null
+    }
+    if (url) stills.set(key, url)
   }
   return url
+}
+
+function pump() {
+  if (pumping) return
+  pumping = true
+  const step = () => {
+    // Unas pocas por cuadro: la interfaz sigue fluida mientras se llenan.
+    const until = performance.now() + 8
+    while (queue.length && performance.now() < until) {
+      const { key, kind, id } = queue.shift()!
+      const url = draw(kind, indexOf(kind, id), STILL_VALUE[kind]).toDataURL('image/jpeg', 0.82)
+      stills.set(key, url)
+      try {
+        localStorage.setItem(storageKey(key), url)
+      } catch {
+        // Sin espacio: queda solo en memoria.
+      }
+      for (const cb of pending.get(key) ?? []) cb(url)
+      pending.delete(key)
+    }
+    if (queue.length) requestAnimationFrame(step)
+    else pumping = false
+  }
+  requestAnimationFrame(step)
+}
+
+/** Pide la imagen fija; llega enseguida si está guardada, si no en cuanto se genere. */
+export function requestStill(kind: 'transition' | 'effect', id: string, cb: (url: string) => void): () => void {
+  const hit = cachedStill(kind, id)
+  if (hit) {
+    cb(hit)
+    return () => undefined
+  }
+  const key = `${kind}:${id}`
+  const list = pending.get(key)
+  if (list) list.push(cb)
+  else {
+    pending.set(key, [cb])
+    // Las fotos de muestra tienen que estar cargadas para que la miniatura sea la buena.
+    void loadSamples().then(() => {
+      queue.push({ key, kind, id })
+      pump()
+    })
+  }
+  return () => {
+    const l = pending.get(key)
+    if (l) l.splice(l.indexOf(cb) >>> 0, 1)
+  }
 }
 
 // --- Miniaturas de LUT: la foto de muestra con el LUT aplicado y una carta de color ---

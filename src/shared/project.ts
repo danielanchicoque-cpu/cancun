@@ -73,12 +73,57 @@ export interface Color {
 }
 
 /** Retoque de piel/rostro, 0..1. */
+/**
+ * Retoque (como el de CapCut): piel, forma del rostro, rasgos y cuerpo. Cada sección se
+ * activa con su casilla. Piel: 0..1. Rostro, rasgos y cuerpo: -1..1, 0 = sin cambio.
+ */
 export interface Retouch {
+  // Piel
+  skin: boolean
   smooth: number
   whiten: number
   removeBlemishes: number
   evenTone: number
+  smileLines: number
+  darkCircles: number
+  /** Tono de piel elegido (hex) o null para dejar el natural. */
+  skinTone: string | null
+  skinToneAmount: number
+  // Rostro
+  face: boolean
+  faceSmall: number
+  faceSlim: number
+  faceWide: number
+  hairline: number
+  // Funciones: ojos, nariz, boca, cejas
+  features: boolean
+  eyeSize: number
+  eyeBright: number
+  eyeDistance: number
+  eyeHeight: number
+  noseSize: number
+  noseWidth: number
+  noseBridge: number
+  noseHeight: number
+  mouthSize: number
+  /** Blanqueamiento dental, 0..1. */
   teeth: number
+  smile: number
+  lips: number
+  /** Cejas "natural": rellena y define, 0..1. */
+  browNatural: number
+  browThick: number
+  browHeight: number
+  // Cuerpo
+  body: boolean
+  slim: number
+  head: number
+  neck: number
+  arms: number
+  bodyWidth: number
+  waist: number
+  torso: number
+  hips: number
 }
 
 export type BackgroundMode = 'none' | 'auto' | 'chroma'
@@ -423,7 +468,53 @@ export const defaultLight = (): Light => ({
   subjectOnly: true
 })
 
-export const defaultRetouch = (): Retouch => ({ smooth: 0, whiten: 0, removeBlemishes: 0, evenTone: 0, teeth: 0 })
+export const defaultRetouch = (): Retouch => ({
+  skin: true,
+  smooth: 0,
+  whiten: 0,
+  removeBlemishes: 0,
+  evenTone: 0,
+  smileLines: 0,
+  darkCircles: 0,
+  skinTone: null,
+  skinToneAmount: 0.5,
+  face: true,
+  faceSmall: 0,
+  faceSlim: 0,
+  faceWide: 0,
+  hairline: 0,
+  features: true,
+  eyeSize: 0,
+  eyeBright: 0,
+  eyeDistance: 0,
+  eyeHeight: 0,
+  noseSize: 0,
+  noseWidth: 0,
+  noseBridge: 0,
+  noseHeight: 0,
+  mouthSize: 0,
+  teeth: 0,
+  smile: 0,
+  lips: 0,
+  browNatural: 0,
+  browThick: 0,
+  browHeight: 0,
+  body: true,
+  slim: 0,
+  head: 0,
+  neck: 0,
+  arms: 0,
+  bodyWidth: 0,
+  waist: 0,
+  torso: 0,
+  hips: 0
+})
+
+/** Claves de cada sección del retoque (para restablecer y para saber qué detectar). */
+export const RETOUCH_SKIN = ['smooth', 'whiten', 'removeBlemishes', 'evenTone', 'smileLines', 'darkCircles'] as const
+export const RETOUCH_FACE = ['faceSmall', 'faceSlim', 'faceWide', 'hairline'] as const
+export const RETOUCH_FEATURES = ['eyeSize', 'eyeBright', 'eyeDistance', 'eyeHeight', 'noseSize', 'noseWidth', 'noseBridge', 'noseHeight', 'mouthSize', 'teeth', 'smile', 'lips', 'browNatural', 'browThick', 'browHeight'] as const
+export const RETOUCH_BODY = ['slim', 'head', 'neck', 'arms', 'bodyWidth', 'waist', 'torso', 'hips'] as const
 
 export const defaultBackground = (): Background => ({
   mode: 'none',

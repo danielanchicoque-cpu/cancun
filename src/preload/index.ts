@@ -50,7 +50,8 @@ const api = {
     list: () => invoke('projects:list'),
     load: (id: string) => invoke('projects:load', id),
     save: (p: unknown) => invoke('projects:save', p),
-    remove: (id: string) => invoke('projects:delete', id)
+    remove: (id: string) => invoke('projects:delete', id),
+    cover: (id: string, dataUrl: string) => invoke('projects:cover', id, dataUrl)
   },
   media: {
     pick: () => invoke('media:pick'),
@@ -61,7 +62,9 @@ const api = {
     pathOf: (file: File) => webUtils.getPathForFile(file)
   },
   sounds: {
-    list: () => invoke('sounds:list')
+    list: () => invoke('sounds:list'),
+    meta: (path: string) => invoke('sounds:meta', path),
+    openMusicDir: () => invoke('sounds:openMusicDir')
   },
   luts: {
     list: () => invoke('luts:list'),
@@ -82,6 +85,8 @@ const api = {
   chat: {
     send: (text: string, context: unknown) => invoke('chat:send', text, context),
     stop: () => invoke('chat:stop'),
+    status: () => invoke('chat:status'),
+    login: () => invoke('chat:login'),
     reset: () => invoke('chat:reset'),
     onEvent: (cb: (e: { type: string; text?: string; tool?: string; error?: string }) => void) => listen('chat:event', cb)
   },

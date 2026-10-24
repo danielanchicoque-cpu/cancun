@@ -29,7 +29,7 @@ import { Icon, type IconName } from './icons'
 const RULER_H = 26
 const NEW_TRACK_ZONE = 26
 const SNAP_PX = 8
-const HEIGHT: Record<Track['kind'] | 'main', number> = { main: 72, video: 58, audio: 48, text: 30, effect: 30 }
+const HEIGHT: Record<Track['kind'] | 'main', number> = { main: 92, video: 70, audio: 52, text: 30, effect: 30 }
 
 const trackHeight = (p: Project, t: Track) => (p.tracks[0] === t ? HEIGHT.main : HEIGHT[t.kind])
 
@@ -111,12 +111,16 @@ function Filmstrip({ strip, clip, zoom, width, height, mediaDur, aspect }: { str
   return <canvas ref={ref} className="strip" />
 }
 
-function Waveform({ peaks, from, to, width, color }: { peaks: number[]; from: number; to: number; width: number; color: string }) {
+/**
+ * Forma de onda con el volumen aplicado (`gainAt`, de 0 a 1 en el ancho del clip): sube y baja
+ * al mover la línea de volumen, y lo que pasaría de 0 dBFS (recorte) se pinta en otro color.
+ */
+function Waveform({ peaks, from, to, width, color, gainAt, height }: { peaks: number[]; from: number; to: number; width: number; color: string; gainAt: (u: number) => number; height: number }) {
   const ref = useRef<HTMLCanvasElement>(null)
   useLayoutEffect(() => {
     const cv = ref.current!
     const w = Math.max(1, Math.min(16000, Math.round(width)))
-    const h = cv.clientHeight || 30
+    const h = Math.max(4, height)
     cv.width = w
     cv.height = h
     const ctx = cv.getContext('2d')!
@@ -128,12 +132,16 @@ function Waveform({ peaks, from, to, width, color }: { peaks: number[]; from: nu
       const i1 = Math.max(i0 + 1, Math.floor(a + ((b - a) * (x + 1)) / w))
       let m = 0
       for (let i = i0; i < i1 && i < peaks.length; i++) m = Math.max(m, peaks[i])
-      const bh = Math.max(1, m * h)
+      const v = m * gainAt(x / w)
+      const bh = Math.max(1, Math.min(1, v) * h)
+      ctx.fillStyle = v > 1 ? CLIP_COLOR : color
       ctx.fillRect(x, h - bh, 1, bh)
     }
-  }, [peaks, from, to, width, color])
-  return <canvas className="wave" ref={ref} />
+  }, [peaks, from, to, width, color, gainAt, height])
+  return <canvas className="wave" ref={ref} style={{ height }} />
 }
+
+const CLIP_COLOR = '#ff8a3d'
 
 /** Posición vertical de la línea de volumen: 0 dB a un tercio, +20 dB arriba, −60 dB abajo. */
 const volumeY = (gain: number) => {
@@ -173,8 +181,14 @@ const ClipView = memo(function ClipView({ clip, project, zoom, height, selected,
   const label =
     clip.type === 'text' ? clip.text.split('\n')[0] || 'Texto' : clip.type === 'effect' ? EFFECTS.find((e) => e.id === clip.effect)?.label ?? clip.effect : clip.type === 'adjust' ? `${clip.name}${clip.color.lut ? ` · ${clip.color.lut.name}` : ''}` : (c.freeze ? '❄ ' : '') + (media?.name ?? '')
   const innerH = height - 6
-  // En video la línea de volumen vive sobre la forma de onda (abajo); en audio ocupa todo el alto.
-  const volH = isAudio ? innerH : Math.round(innerH * 0.45)
+  // En video, como en CapCut, la onda tiene su franja propia debajo de las miniaturas;
+  // la línea de volumen vive en esa franja. En audio ocupa todo el alto.
+  const bandH = hasVolume && !isAudio ? Math.round(innerH * 0.4) : 0
+  const volH = isAudio ? innerH : bandH
+  const gainAt = useMemo(
+    () => (u: number) => (volKeys?.length ? interpolate(volKeys, u * clip.duration) : c.volume),
+    [volKeys, c.volume, clip.duration]
+  )
   return (
     <div
       className={`clip ${clip.type === 'adjust' ? 'adjust' : kind} ${selected ? 'selected' : ''}`}
@@ -184,14 +198,14 @@ const ClipView = memo(function ClipView({ clip, project, zoom, height, selected,
       onContextMenu={(e) => onContext(e, clip)}
     >
       {strip && clip.type === 'media' && media && !isAudio && (
-        <Filmstrip strip={strip} clip={clip} zoom={zoom} width={width} height={innerH} mediaDur={media.duration} aspect={(media.width ?? 16) / (media.height ?? 9)} />
+        <Filmstrip strip={strip} clip={clip} zoom={zoom} width={width} height={innerH - bandH} mediaDur={media.duration} aspect={(media.width ?? 16) / (media.height ?? 9)} />
       )}
       <div className="clip-label">
         <span>{label}</span>
         <span className="d">{shortTime(clip.duration)}</span>
       </div>
       {clip.type === 'media' && (
-        <div className="fx">
+        <div className="fx" style={bandH ? { bottom: bandH + 2 } : undefined}>
           {c.color.lut && <span>{c.color.lut.name}</span>}
           {c.speed !== 1 && <span>{c.speed}x</span>}
           {c.background.mode !== 'none' && <span>{c.background.mode === 'chroma' ? 'Chroma' : 'Sin fondo'}</span>}
@@ -200,8 +214,17 @@ const ClipView = memo(function ClipView({ clip, project, zoom, height, selected,
           {(c.animations.in || c.animations.out || c.animations.combo) && <span>Anim</span>}
         </div>
       )}
+      {bandH > 0 && <div className="audio-band" style={{ height: bandH }} />}
       {peaks && clip.type === 'media' && !c.freeze && (
-        <Waveform peaks={peaks} from={clip.sourceIn} to={clip.sourceIn + clip.duration * clip.speed} width={width} color={isAudio ? '#7fe0a8' : '#ffffff55'} />
+        <Waveform
+          peaks={peaks}
+          from={clip.sourceIn}
+          to={clip.sourceIn + clip.duration * clip.speed}
+          width={width}
+          color={isAudio ? '#7fe0a8' : '#5fd3dc'}
+          gainAt={gainAt}
+          height={isAudio ? Math.round(innerH * 0.75) : bandH - 2}
+        />
       )}
       {hasVolume && (
         <svg className="volume-line" width={width} height={volH} style={{ top: innerH - volH }}>
@@ -312,6 +335,8 @@ export function Timeline() {
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null)
   const [dropRow, setDropRow] = useState<string | null>(null)
   const [junctionOver, setJunctionOver] = useState<string | null>(null)
+  // Etiqueta flotante mientras se arrastra (dB del volumen, duración de la transición).
+  const [dragTip, setDragTip] = useState<{ x: number; y: number; text: string } | null>(null)
   const [menu, setMenu] = useState<Menu | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const headsRef = useRef<HTMLDivElement>(null)
@@ -410,7 +435,10 @@ export function Timeline() {
       if (mode === 'volume' && clip.type === 'media' && clipEl) {
         const r = (clipEl.querySelector('.volume-line') as SVGElement).getBoundingClientRect()
         const y = Math.max(0, Math.min(1, (ev.clientY - r.top) / r.height))
-        st.preview(base, { op: 'updateClip', clipId: clip.id, patch: { volume: Math.round(yToGain(y) * 1000) / 1000 } })
+        const gain = Math.round(yToGain(y) * 1000) / 1000
+        st.preview(base, { op: 'updateClip', clipId: clip.id, patch: { volume: gain } })
+        const db = gainToDb(gain)
+        setDragTip({ x: ev.clientX, y: r.top + y * r.height, text: db <= -59.5 ? '−∞ dB' : `${db > 0 ? '+' : ''}${db.toFixed(1)} dB` })
         return
       }
       if (mode === 'trim-l' || mode === 'trim-r') {
@@ -462,6 +490,7 @@ export function Timeline() {
       window.removeEventListener('pointerup', up)
       setGhost(null)
       setSnapX(null)
+      setDragTip(null)
       if (!moved) {
         if (mode === 'move') useEditor.getState().select(clip.id)
         return
@@ -473,6 +502,30 @@ export function Timeline() {
           toast(err instanceof Error ? err.message : String(err), true)
         }
       }
+    }
+    window.addEventListener('pointermove', move)
+    window.addEventListener('pointerup', up)
+  }
+
+  // --- Duración de una transición arrastrando sus bordes (simétrica respecto al corte) ----
+  const resizeTransition = (e: React.PointerEvent, a: Clip, b: Clip, cutX: number) => {
+    e.stopPropagation()
+    e.preventDefault()
+    const base = useEditor.getState().project!
+    const tr = (a as MediaClip).transition!
+    const max = Math.min(a.duration, b.duration)
+    useEditor.getState().select(a.id)
+    const move = (ev: PointerEvent) => {
+      const { x } = local(ev.clientX, ev.clientY)
+      const dur = Math.max(0.1 * US, Math.min(max, ((Math.abs(x - cutX) * 2) / zoom) * US))
+      const rounded = Math.round(dur / (US / 10)) * (US / 10)
+      useEditor.getState().preview(base, { op: 'setTransition', clipId: a.id, transition: { ...tr, duration: rounded } })
+      setDragTip({ x: ev.clientX, y: ev.clientY - 18, text: `${(rounded / US).toFixed(1)}s` })
+    }
+    const up = () => {
+      window.removeEventListener('pointermove', move)
+      window.removeEventListener('pointerup', up)
+      setDragTip(null)
     }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
@@ -811,8 +864,13 @@ export function Timeline() {
                   />
                   {c.transition && (
                     <div
-                      className="transition-mark"
-                      style={{ left: x, top: mainRow.top + mainRow.height / 2 }}
+                      className={`transition-mark ${selection.includes(c.id) ? 'selected' : ''}`}
+                      style={{
+                        left: x - ((c.transition.duration / US) * zoom) / 2,
+                        width: Math.max(14, (c.transition.duration / US) * zoom),
+                        top: mainRow.top + 3,
+                        height: mainRow.height - 6
+                      }}
                       title={`${TRANSITIONS.find((t) => t.kind === c.transition!.kind)?.label ?? c.transition.kind} · ${(c.transition.duration / US).toFixed(1)}s — doble clic para quitar`}
                       onPointerDown={(e) => {
                         e.stopPropagation()
@@ -820,7 +878,11 @@ export function Timeline() {
                       }}
                       onDoubleClick={() => applyTransition(c.id, null)}
                     >
-                      <Icon name="transitions" size={11} />
+                      <span className="tr-icon">
+                        <Icon name="transitions" size={12} />
+                      </span>
+                      <span className="tr-edge l" onPointerDown={(e) => resizeTransition(e, c, mainClips[i + 1], x)} />
+                      <span className="tr-edge r" onPointerDown={(e) => resizeTransition(e, c, mainClips[i + 1], x)} />
                     </div>
                   )}
                 </div>
@@ -830,6 +892,7 @@ export function Timeline() {
             {snapX !== null && <div className="snap-line" style={{ left: snapX }} />}
             {marquee && <div className="marquee" style={{ left: marquee.x0, top: marquee.y0, width: marquee.x1 - marquee.x0, height: marquee.y1 - marquee.y0 }} />}
             <HoverLine zoom={zoom} />
+            {dragTip && <div className="drag-tip" style={{ left: dragTip.x, top: dragTip.y }}>{dragTip.text}</div>}
             <Playhead zoom={zoom} onDrag={dragPlayhead} />
           </div>
         </div>
