@@ -6,7 +6,34 @@ import { useFilmstrip } from '../assets'
 import { DEFAULT_TRANSITION_US, addToTimeline, applyTransition, importFiles, pickAndImport, targetClip, toast } from '../actions'
 import { shortTime } from '../format'
 import { EFFECTS } from '../gl/shaders'
-import { THUMB_FRAMES, thumbFrames, thumbStill } from '../gl/thumbnails'
+import { THUMB_FRAMES, loadSamples, lutThumb, samplesReady, thumbFrames, thumbStill } from '../gl/thumbnails'
+
+/** Re-renderiza cuando las fotos de muestra terminan de cargar. */
+function useSamples(): boolean {
+  const [ready, setReady] = useState(samplesReady)
+  useEffect(() => {
+    if (!ready) void loadSamples().then(() => setReady(true))
+  }, [])
+  return ready
+}
+
+function LutThumb({ lut }: { lut: LutEntry }) {
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    lutThumb(lut.path, api.loadLut)
+      .then((u) => alive && setUrl(u))
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [lut.path])
+  return (
+    <div className="thumb lut-thumb" style={url ? { backgroundImage: `url("${url}")` } : undefined}>
+      {!url && <Icon name="adjust" size={22} />}
+    </div>
+  )
+}
 import { TEXT_PRESETS, TRANSITIONS } from './catalog'
 import { Icon, type IconName } from './icons'
 
@@ -357,6 +384,7 @@ function AnimatedThumb({ kind, id }: { kind: 'transition' | 'effect'; id: string
 }
 
 function TransitionBrowser() {
+  const ready = useSamples()
   const [group, setGroup] = useState('')
   const groups = [...new Set(TRANSITIONS.map((t) => t.group))]
   const apply = (kind: (typeof TRANSITIONS)[number]['kind']) => {
@@ -385,7 +413,7 @@ function TransitionBrowser() {
             onClick={() => apply(t.kind)}
             title="Clic: aplicar al clip seleccionado · Arrastrar: soltar entre dos clips"
           >
-            <AnimatedThumb kind="transition" id={t.kind} />
+            <AnimatedThumb key={`${t.kind}-${ready}`} kind="transition" id={t.kind} />
             <div className="label">{t.label}</div>
           </div>
         ))}
@@ -395,6 +423,9 @@ function TransitionBrowser() {
 }
 
 function EffectBrowser() {
+  const ready = useSamples()
+  const [group, setGroup] = useState('')
+  const groups = [...new Set(EFFECTS.map((e) => e.group))]
   const add = (id: string) => {
     const s = useEditor.getState()
     const [created] = s.dispatch({ op: 'addEffect', effect: id, start: s.time })
@@ -402,9 +433,17 @@ function EffectBrowser() {
   }
   return (
     <div className="side-content">
+      <div className="chips">
+        <button className={!group ? 'active' : ''} onClick={() => setGroup('')}>Todos</button>
+        {groups.map((g) => (
+          <button key={g} className={group === g ? 'active' : ''} onClick={() => setGroup(g)}>
+            {g}
+          </button>
+        ))}
+      </div>
       <div className="hint" style={{ marginBottom: 8 }}>Los efectos van en su propia pista y afectan todo lo que tienen debajo.</div>
       <div className="asset-grid">
-        {EFFECTS.map((e) => (
+        {EFFECTS.filter((e) => !group || e.group === group).map((e) => (
           <div
             key={e.id}
             className="asset"
@@ -412,7 +451,7 @@ function EffectBrowser() {
             onDragStart={(ev) => ev.dataTransfer.setData('application/x-cancun-effect', e.id)}
             onClick={() => add(e.id)}
           >
-            <AnimatedThumb kind="effect" id={e.id} />
+            <AnimatedThumb key={`${e.id}-${ready}`} kind="effect" id={e.id} />
             <div className="label">{e.label}</div>
           </div>
         ))}
@@ -472,9 +511,7 @@ function LutBrowser() {
               onClick={() => apply(l)}
               title={`${l.path}\nClic: aplicar al clip seleccionado · Arrastrar: capa de ajuste`}
             >
-              <div className="thumb lut-thumb" style={l.thumb ? { backgroundImage: `url("${mediaUrl(l.thumb)}")` } : undefined}>
-                {!l.thumb && <Icon name="adjust" size={22} />}
-              </div>
+              <LutThumb lut={l} />
               <div className="label">{l.name}.cube</div>
             </div>
           ))}

@@ -37,7 +37,7 @@ function serveMedia(request: Request): Response {
   const range = /bytes=(\d*)-(\d*)/.exec(request.headers.get('range') ?? '')
   if (!range) {
     return new Response(Readable.toWeb(createReadStream(path)) as ReadableStream, {
-      headers: { 'content-type': type, 'content-length': String(size), 'accept-ranges': 'bytes' }
+      headers: { 'content-type': type, 'content-length': String(size), 'accept-ranges': 'bytes', 'access-control-allow-origin': '*' }
     })
   }
   const start = range[1] ? Number(range[1]) : Math.max(0, size - Number(range[2]))
@@ -48,7 +48,7 @@ function serveMedia(request: Request): Response {
       'content-type': type,
       'content-length': String(end - start + 1),
       'content-range': `bytes ${start}-${end}/${size}`,
-      'accept-ranges': 'bytes'
+      'accept-ranges': 'bytes', 'access-control-allow-origin': '*'
     }
   })
 }

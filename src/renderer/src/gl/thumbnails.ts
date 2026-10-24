@@ -1,10 +1,52 @@
 // Miniaturas animadas de transiciones y efectos, dibujadas con los mismos shaders del
 // compositor sobre dos imágenes de muestra. Se generan bajo demanda y quedan en caché.
 
+import { mediaUrl } from '../api'
 import { EFFECTS, EFFECT_FS, QUAD_VS, TRANSITION_FS, TRANSITION_KINDS } from './shaders'
 
 const W = 192
-const H = 108
+const H = 144
+
+/** Fotos de muestra propias (generadas para Cancun) sobre las que se ven transiciones y efectos. */
+const SAMPLE_NAMES = ['chico-gafas', 'casa-blanca', 'mujer-sonrisa', 'auto-clasico', 'faro-isla', 'montana-nieve', 'ciudad-atardecer', 'retrato-nina'] as const
+const images = new Map<string, HTMLImageElement>()
+let loading: Promise<void> | null = null
+
+/** Carga las fotos de muestra (una vez). */
+export function loadSamples(): Promise<void> {
+  loading ??= window.cancun.paths.app().then((root: string) => Promise.all(
+    SAMPLE_NAMES.map(
+      (n) =>
+        new Promise<void>((resolve) => {
+          const img = new Image()
+          img.onload = () => {
+            images.set(n, img)
+            resolve()
+          }
+          img.onerror = () => resolve()
+          // Por media:// (con CORS) para poder leer sus píxeles en WebGL y en el canvas.
+          img.crossOrigin = 'anonymous'
+          img.src = mediaUrl(`${root.split('\\').join('/')}/resources/samples/${n}.jpg`)
+        })
+    )
+  )).then(() => undefined)
+  return loading
+}
+
+export const samplesReady = () => images.size > 0
+
+/** La foto de muestra ya cargada (para las miniaturas de los LUT). */
+export const sampleImage = (name: string) => images.get(name)
+
+const PAIRS: [string, string][] = [
+  ['chico-gafas', 'casa-blanca'],
+  ['auto-clasico', 'faro-isla'],
+  ['mujer-sonrisa', 'ciudad-atardecer'],
+  ['montana-nieve', 'chico-gafas'],
+  ['casa-blanca', 'auto-clasico'],
+  ['faro-isla', 'mujer-sonrisa']
+]
+const EFFECT_SAMPLES = ['mujer-sonrisa', 'chico-gafas', 'ciudad-atardecer', 'retrato-nina']
 export const THUMB_FRAMES = 16
 
 let ctx: {
@@ -12,8 +54,7 @@ let ctx: {
   canvas: HTMLCanvasElement
   trans: { prog: WebGLProgram; loc: Record<string, WebGLUniformLocation | null> }
   effect: { prog: WebGLProgram; loc: Record<string, WebGLUniformLocation | null> }
-  a: WebGLTexture
-  b: WebGLTexture
+  tex: (name: string) => WebGLTexture
 } | null = null
 
 function sample(top: string, bottom: string, label: string): HTMLCanvasElement {
@@ -79,18 +120,35 @@ function setup() {
     return t
   }
   const common = ['uMatrix', 'uCanvas', 'uSize']
+  const cache = new Map<string, WebGLTexture>()
+  const fallback = [tex(sample('#1f6f86', '#0d2a36', '')), tex(sample('#d88a3c', '#6a2c4a', ''))]
   ctx = {
     gl,
     canvas,
     trans: compile(TRANSITION_FS, [...common, 'uA', 'uB', 'uP', 'uKind']),
     effect: compile(EFFECT_FS, [...common, 'uSrc', 'uEffect', 'uTime', 'uIntensity', 'uSpeed']),
-    a: tex(sample('#1f6f86', '#0d2a36', 'A')),
-    b: tex(sample('#d88a3c', '#6a2c4a', 'B'))
+    tex(name: string) {
+      let t = cache.get(name)
+      if (!t) {
+        const img = images.get(name)
+        if (!img) return fallback[name.length % 2]
+        // Recorta la foto al formato de la miniatura.
+        const c = document.createElement('canvas')
+        c.width = W
+        c.height = H
+        c.getContext('2d')!.drawImage(img, 0, 0, W, H)
+        t = tex(c)
+        cache.set(name, t)
+      }
+      return t
+    }
   }
   return ctx
 }
 
 function draw(kind: 'transition' | 'effect', index: number, value: number): string {
+  const pair = PAIRS[index % PAIRS.length]
+  const single = EFFECT_SAMPLES[index % EFFECT_SAMPLES.length]
   const c = setup()
   const { gl } = c
   const p = kind === 'transition' ? c.trans : c.effect
@@ -100,11 +158,11 @@ function draw(kind: 'transition' | 'effect', index: number, value: number): stri
   gl.uniform2f(p.loc.uCanvas, W, H)
   gl.uniform2f(p.loc.uSize, W, H)
   gl.activeTexture(gl.TEXTURE0)
-  gl.bindTexture(gl.TEXTURE_2D, c.a)
+  gl.bindTexture(gl.TEXTURE_2D, c.tex(kind === 'transition' ? pair[0] : single))
   if (kind === 'transition') {
     gl.uniform1i(p.loc.uA, 0)
     gl.activeTexture(gl.TEXTURE1)
-    gl.bindTexture(gl.TEXTURE_2D, c.b)
+    gl.bindTexture(gl.TEXTURE_2D, c.tex(pair[1]))
     gl.uniform1i(p.loc.uB, 1)
     gl.uniform1f(p.loc.uP, value)
     gl.uniform1i(p.loc.uKind, index)
@@ -123,7 +181,7 @@ const cache = new Map<string, string[]>()
 
 /** Cuadros de la miniatura animada (el primero sirve de imagen fija). */
 export function thumbFrames(kind: 'transition' | 'effect', id: string): string[] {
-  const key = `${kind}:${id}`
+  const key = `${kind}:${id}:${images.size}`
   let frames = cache.get(key)
   if (!frames) {
     const index = kind === 'transition' ? TRANSITION_KINDS.indexOf(id as never) : EFFECTS.findIndex((e) => e.id === id)
@@ -137,12 +195,58 @@ export function thumbFrames(kind: 'transition' | 'effect', id: string): string[]
 
 /** Solo la imagen fija (más barata para pintar la cuadrícula completa). */
 export function thumbStill(kind: 'transition' | 'effect', id: string): string {
-  const key = `${kind}:${id}:still`
+  const key = `${kind}:${id}:still:${images.size}`
   let url = cache.get(key)?.[0]
   if (!url) {
     const index = kind === 'transition' ? TRANSITION_KINDS.indexOf(id as never) : EFFECTS.findIndex((e) => e.id === id)
-    url = draw(kind, index, kind === 'transition' ? 0.45 : 0.6)
+    url = draw(kind, index, kind === 'transition' ? 0.3 : 0.6)
     cache.set(key, [url])
   }
   return url
+}
+
+// --- Miniaturas de LUT: la foto de muestra con el LUT aplicado y una carta de color ---
+
+const lutCache = new Map<string, Promise<string>>()
+const CHIPS = ['#e23b3b', '#f08a24', '#f5d33b', '#4fbf4a', '#2fa3e0', '#5a4fd6', '#d24fb0', '#8a5a3c']
+
+export function lutThumb(path: string, load: (p: string) => Promise<{ size: number; domainMin: [number, number, number]; domainMax: [number, number, number]; data: Float32Array }>): Promise<string> {
+  let pr = lutCache.get(path)
+  if (!pr) {
+    pr = (async () => {
+      await loadSamples()
+      const raw = await load(path)
+      const { sampleCube } = await import('@shared/cube')
+      const lut = { title: '', size: raw.size, domainMin: raw.domainMin, domainMax: raw.domainMax, data: new Float32Array(raw.data) }
+      const c = document.createElement('canvas')
+      c.width = W
+      c.height = H
+      const g = c.getContext('2d')!
+      const img = images.get('retrato-nina')
+      if (img) g.drawImage(img, 0, 0, W, H)
+      // Carta de color a la izquierda y escala de grises a la derecha, como referencia.
+      CHIPS.forEach((col, i) => {
+        g.fillStyle = col
+        g.fillRect(8, 10 + i * 15, 12, 12)
+      })
+      for (let i = 0; i < 9; i++) {
+        const v = Math.round((i / 8) * 255)
+        g.fillStyle = `rgb(${v},${v},${v})`
+        g.fillRect(W - 20, 10 + i * 14, 12, 14)
+      }
+      const px = g.getImageData(0, 0, W, H)
+      const d = px.data
+      for (let i = 0; i < d.length; i += 4) {
+        const [r, gg, b] = sampleCube(lut, d[i] / 255, d[i + 1] / 255, d[i + 2] / 255)
+        d[i] = r * 255
+        d[i + 1] = gg * 255
+        d[i + 2] = b * 255
+      }
+      g.putImageData(px, 0, 0)
+      return c.toDataURL('image/jpeg', 0.85)
+    })()
+    lutCache.set(path, pr)
+    pr.catch(() => lutCache.delete(path))
+  }
+  return pr
 }
