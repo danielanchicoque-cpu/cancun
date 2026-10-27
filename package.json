@@ -41,11 +41,14 @@
     "esbuild@0.25.12": true,
     "esbuild@0.28.2": true
   },
-  "author": "Daniel",
+  "author": "Daniel Anchicoque Martínez",
+  "license": "MIT",
+  "homepage": "https://github.com/danielanchicoque-cpu/cancun",
+  "repository": { "type": "git", "url": "git+https://github.com/danielanchicoque-cpu/cancun.git" },
   "build": {
     "appId": "com.daniel.cancun",
     "productName": "Cancun",
-    "copyright": "Daniel",
+    "copyright": "Copyright (c) 2026 Daniel Anchicoque Martínez",
     "directories": {
       "output": "dist",
       "buildResources": "build"
