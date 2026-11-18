@@ -5,6 +5,7 @@
 import type { CubeLut } from '@shared/cube'
 import { type MediaClip, type Project, US, projectDuration } from '@shared/project'
 import { type ClipFrame, audibleAt, clipsNear, layersAt } from '@shared/timeline'
+import { type VoiceResult, voiceJob, voiceKey } from '@shared/voice'
 import { api, mediaUrl } from '../api'
 import { Compositor, type FrameSource, type SegSource } from '../gl/Compositor'
 import { Segmenter, needsSegmentation, segNeeds } from './Segmenter'
@@ -19,6 +20,8 @@ interface Slot {
   mediaId: string
   el: HTMLVideoElement | HTMLImageElement
   gain: GainNode | null
+  /** Audio ya limpio por el motor de voz (si el clip tiene efectos de voz). */
+  voice: { key: string; el: HTMLAudioElement; gain: GainNode; start: number } | null
   lastUsed: number
 }
 
@@ -30,6 +33,8 @@ export class Player {
   private lutLoading = new Set<string>()
   private segmenter: Segmenter | null = null
   private segLoading = false
+  private voices = new Map<string, VoiceResult>()
+  private voiceLoading = new Set<string>()
   private raf = 0
   private playing = false
   private clockStart = 0
@@ -100,7 +105,10 @@ export class Player {
 
   pause() {
     this.playing = false
-    for (const s of this.slots.values()) if (s.el instanceof HTMLVideoElement) s.el.pause()
+    for (const s of this.slots.values()) {
+      if (s.el instanceof HTMLVideoElement) s.el.pause()
+      s.voice?.el.pause()
+    }
     this.dirty = true
   }
 
@@ -207,7 +215,7 @@ export class Player {
         } else v.muted = true
         el = v
       }
-      slot = { clipId: clip.id, mediaId: clip.mediaId, el, gain, lastUsed: performance.now() }
+      slot = { clipId: clip.id, mediaId: clip.mediaId, el, gain, voice: null, lastUsed: performance.now() }
       this.slots.set(clip.id, slot)
       this.evict()
     }
@@ -222,8 +230,54 @@ export class Player {
       s.el.load()
     }
     s.gain?.disconnect()
+    this.dropVoice(s)
     this.segmenter?.forget(s.clipId)
     this.slots.delete(s.clipId)
+  }
+
+  /** Audio limpio del clip: lo pide al proceso principal la primera vez y lo conecta. */
+  private voiceFor(p: Project, clip: MediaClip, slot: Slot): Slot['voice'] {
+    const job = voiceJob(clip, p.media[clip.mediaId])
+    if (!job) {
+      this.dropVoice(slot)
+      return null
+    }
+    const key = voiceKey(job)
+    if (slot.voice?.key === key) return slot.voice
+    const ready = this.voices.get(key)
+    if (!ready) {
+      if (!this.voiceLoading.has(key)) {
+        this.voiceLoading.add(key)
+        api
+          .prepareVoice(job)
+          .then((r) => {
+            this.voices.set(key, r)
+            this.dirty = true
+          })
+          .catch((err) => console.error('Voz', err))
+          .finally(() => this.voiceLoading.delete(key))
+      }
+      // Mientras se procesa, suena el audio original (sin efectos).
+      return slot.voice
+    }
+    this.dropVoice(slot)
+    const el = new Audio(mediaUrl(ready.path))
+    el.preload = 'auto'
+    el.crossOrigin = 'anonymous'
+    const gain = this.audio.createGain()
+    gain.gain.value = 0
+    this.audio.createMediaElementSource(el).connect(gain).connect(this.audio.destination)
+    slot.voice = { key, el, gain, start: ready.start }
+    return slot.voice
+  }
+
+  private dropVoice(s: Slot) {
+    if (!s.voice) return
+    s.voice.el.pause()
+    s.voice.el.removeAttribute('src')
+    s.voice.el.load()
+    s.voice.gain.disconnect()
+    s.voice = null
   }
 
   private evict() {
@@ -273,7 +327,21 @@ export class Player {
       const vis = visible.get(clip.id)
       const audible = gains.get(clip.id)
       const target = vis?.source ?? audible?.source
-      if (slot.gain) slot.gain.gain.setTargetAtTime(this.playing ? audible?.gain ?? 0 : 0, this.audio.currentTime, 0.01)
+      const voice = slot.gain ? this.voiceFor(p, clip, slot) : null
+      const level = this.playing ? audible?.gain ?? 0 : 0
+      if (slot.gain) slot.gain.gain.setTargetAtTime(voice ? 0 : level, this.audio.currentTime, 0.01)
+      if (voice) {
+        voice.gain.gain.setTargetAtTime(level, this.audio.currentTime, 0.01)
+        const a = voice.el
+        if (this.playing && target !== undefined && !clip.freeze) {
+          const want = Math.max(0, (target - voice.start) / US)
+          a.playbackRate = clip.speed
+          if (a.paused) {
+            a.currentTime = want
+            void a.play().catch(() => undefined)
+          } else if (Math.abs(a.currentTime - want) > DRIFT_PLAYING * Math.max(1, clip.speed)) a.currentTime = want
+        } else if (!a.paused) a.pause()
+      }
       if (slot.el instanceof HTMLVideoElement) {
         const v = slot.el
         if (target === undefined) {

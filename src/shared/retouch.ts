@@ -26,9 +26,13 @@ export interface Landmarks {
 
 const anyOn = (r: Retouch, keys: readonly (keyof Retouch)[]) => keys.some((k) => Math.abs(r[k] as number) > 0.001)
 
-/** ¿Hace falta detectar la cara? */
+/** ¿Hace falta detectar la cara? (El suavizado la usa para no tocar ojos, cejas ni labios.) */
 export function needsFace(r: Retouch): boolean {
-  return (r.face && anyOn(r, RETOUCH_FACE)) || (r.features && anyOn(r, RETOUCH_FEATURES)) || (r.skin && (r.darkCircles > 0 || r.smileLines > 0))
+  return (
+    (r.face && anyOn(r, RETOUCH_FACE)) ||
+    (r.features && anyOn(r, RETOUCH_FEATURES)) ||
+    (r.skin && (r.darkCircles > 0 || r.smileLines > 0 || r.smooth > 0 || r.removeBlemishes > 0 || r.wrinkles > 0))
+  )
 }
 
 /** ¿Hace falta detectar el cuerpo? */
@@ -38,11 +42,12 @@ export function needsPose(r: Retouch): boolean {
 
 /** ¿Hace falta la máscara de piel? */
 export function needsSkin(r: Retouch): boolean {
-  return r.skin && (r.smooth > 0 || r.whiten > 0 || r.removeBlemishes > 0 || r.evenTone > 0 || (r.skinTone !== null && r.skinToneAmount > 0))
+  return r.skin && (r.smooth > 0 || r.whiten > 0 || r.removeBlemishes > 0 || r.wrinkles > 0 || r.evenTone > 0 || (r.skinTone !== null && r.skinToneAmount > 0))
 }
 
 export const MAX_WARPS = 24
-export const MAX_TONES = 10
+export const MAX_TONES = 16
+export const MAX_ZONES = 16
 
 /** Tipos de deformación y de zona de tono (los mismos números que en el shader). */
 export const WARP_SCALE = 0
@@ -52,6 +57,12 @@ export const TONE_SMILE_LINE = 2
 export const TONE_TEETH = 3
 export const TONE_EYE_BRIGHT = 4
 export const TONE_BROW = 5
+export const TONE_HIGHLIGHT = 6
+export const TONE_SHADOW = 7
+
+/** Zonas del pase de piel: dónde no suavizar y dónde buscar arrugas. */
+export const ZONE_PROTECT = 0
+export const ZONE_WRINKLE = 1
 
 export interface RetouchOps {
   /** Por deformación: centro x, y, radio x, radio y (en uv con x multiplicada por el aspecto). */
@@ -148,6 +159,13 @@ export function retouchOps(r: Retouch, marks: Landmarks | null | undefined, aspe
       warp(bridge, noseW * 0.45, noseW * 0.9, WARP_SCALE, 0.3 * r.noseBridge * Math.abs(right[0]), 0.3 * r.noseBridge * Math.abs(right[1]))
       const nl = mul(up, noseW * 0.15 * r.noseHeight)
       warp(noseTip, noseW * 0.9, noseW * 0.9, WARP_MOVE, nl[0], nl[1])
+      // Estereoscópica: luz a lo largo del puente y en la punta, sombra suave a los lados.
+      const ridgeTop = pt(168)
+      const ridgeLen = dist(ridgeTop, noseTip)
+      const ridge = mid(ridgeTop, pt(4))
+      tone(ridge, noseW * 0.16, ridgeLen * 0.55, TONE_HIGHLIGHT, r.noseStereo)
+      tone(add(noseTip, mul(up, noseW * 0.1)), noseW * 0.22, noseW * 0.16, TONE_HIGHLIGHT, r.noseStereo * 0.7)
+      for (const side of [-1, 1]) tone(add(ridge, mul(right, side * noseW * 0.42)), noseW * 0.2, ridgeLen * 0.5, TONE_SHADOW, r.noseStereo)
 
       warp(mouthC, mouthW * 0.75, mouthW * 0.5, WARP_SCALE, 0.2 * r.mouthSize, 0.2 * r.mouthSize)
       warp(mouthC, mouthW * 0.7, mouthW * 0.4, WARP_SCALE, 0, 0.25 * r.lips)
@@ -212,4 +230,61 @@ export function retouchOps(r: Retouch, marks: Landmarks | null | undefined, aspe
   }
 
   return { warpA, warpB, warpN, toneA, toneB, toneN }
+}
+
+export interface SkinZones {
+  /** Por zona: centro x, y, radio x, radio y (mismo espacio que las deformaciones). */
+  zoneA: Float32Array
+  /** Por zona: tipo (ZONE_*), peso, 0, 0. */
+  zoneB: Float32Array
+  zoneN: number
+}
+
+/**
+ * Zonas del rostro para el pase de piel. Las de protección hacen lo que la máscara de cara
+ * de CapCut: el suavizado no entra en ojos, cejas ni labios. Las de arrugas marcan
+ * frente, entrecejo, patas de gallo, ojeras y surcos de la sonrisa.
+ */
+export function skinZones(marks: Landmarks | null | undefined, aspect: number): SkinZones {
+  const zoneA = new Float32Array(MAX_ZONES * 4)
+  const zoneB = new Float32Array(MAX_ZONES * 4)
+  let zoneN = 0
+  const zone = (c: V, rx: number, ry: number, type: number, weight = 1) => {
+    if (zoneN >= MAX_ZONES) return
+    zoneA.set([c[0], c[1], Math.max(rx, 1e-4), Math.max(ry, 1e-4)], zoneN * 4)
+    zoneB.set([type, weight, 0, 0], zoneN * 4)
+    zoneN++
+  }
+  const face = marks?.face
+  if (!face || face.length < FACE_POINTS.length * 2) return { zoneA, zoneB, zoneN }
+  const pt = (idx: (typeof FACE_POINTS)[number]): V => [face[F[idx] * 2] * aspect, 1 - face[F[idx] * 2 + 1]]
+  const top = pt(10)
+  const chin = pt(152)
+  const up = norm(sub(top, chin))
+  const faceW = dist(pt(234), pt(454))
+  const faceH = dist(top, chin)
+  const eyeL = pt(468)
+  const eyeR = pt(473)
+  const eyeMid = mid(eyeL, eyeR)
+  const eyeW = (dist(pt(33), pt(133)) + dist(pt(362), pt(263))) / 2
+  const mouthC = mid(pt(13), pt(14))
+  const mouthW = dist(pt(61), pt(291))
+  const lipH = Math.max(dist(pt(0), pt(17)), mouthW * 0.25)
+
+  for (const eye of [eyeL, eyeR]) zone(eye, eyeW * 0.66, eyeW * 0.4, ZONE_PROTECT)
+  for (const brow of [pt(105), pt(334)]) zone(add(brow, mul(up, -eyeW * 0.05)), eyeW * 0.9, eyeW * 0.28, ZONE_PROTECT)
+  zone(mouthC, mouthW * 0.6, lipH * 0.62, ZONE_PROTECT)
+  zone(mid(pt(129), pt(358)), dist(pt(129), pt(358)) * 0.45, eyeW * 0.18, ZONE_PROTECT, 0.6)
+
+  zone(add(mid(top, eyeMid), mul(up, faceH * 0.04)), faceW * 0.38, faceH * 0.15, ZONE_WRINKLE)
+  zone(mid(pt(105), pt(334)), eyeW * 0.45, eyeW * 0.4, ZONE_WRINKLE)
+  for (const [outer, eye] of [[pt(33), eyeL], [pt(263), eyeR]] as [V, V][]) {
+    const away = norm(sub(outer, eye))
+    zone(add(outer, mul(away, eyeW * 0.35)), eyeW * 0.5, eyeW * 0.5, ZONE_WRINKLE)
+    zone(add(eye, mul(up, -eyeW * 0.6)), eyeW * 0.62, eyeW * 0.32, ZONE_WRINKLE, 0.8)
+  }
+  for (const [ala, corner] of [[pt(129), pt(61)], [pt(358), pt(291)]] as [V, V][]) {
+    zone(mid(ala, corner), mouthW * 0.24, mouthW * 0.42, ZONE_WRINKLE)
+  }
+  return { zoneA, zoneB, zoneN }
 }

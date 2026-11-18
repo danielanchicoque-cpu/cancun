@@ -21,7 +21,27 @@ function freePort(): Promise<number> {
 }
 import { buildExport } from '@shared/exportGraph'
 import type { Project } from '@shared/project'
+import { type VoiceResult, voiceJob } from '@shared/voice'
 import { FFMPEG, run } from './media'
+import { prepareVoice } from './voice'
+
+/** Limpia la voz de los clips que lo piden (queda en caché; la vista previa ya suele tenerla). */
+async function prepareVoices(project: Project, onProgress: (p: ExportProgress) => void): Promise<Record<string, VoiceResult>> {
+  const jobs: { clipId: string; job: NonNullable<ReturnType<typeof voiceJob>> }[] = []
+  for (const track of project.tracks) {
+    if (track.muted) continue
+    for (const clip of track.clips) {
+      if (clip.type !== 'media' || clip.freeze) continue
+      const job = voiceJob(clip, project.media[clip.mediaId])
+      if (job) jobs.push({ clipId: clip.id, job })
+    }
+  }
+  const out: Record<string, VoiceResult> = {}
+  for (const [n, { clipId, job }] of jobs.entries()) {
+    out[clipId] = await prepareVoice(job, (f) => onProgress({ fraction: 0, fps: 0, eta: 0, stage: `Procesando voz (${n + 1}/${jobs.length}) ${Math.round(f * 100)} %` }))
+  }
+  return out
+}
 
 const encoderCache = new Map<string, string>()
 
@@ -50,6 +70,8 @@ export interface ExportProgress {
   fps: number
   /** Segundos restantes estimados. */
   eta: number
+  /** Paso previo en curso (p. ej. procesar la voz), si lo hay. */
+  stage?: string
 }
 
 let renderWin: BrowserWindow | null = null
@@ -147,7 +169,8 @@ export async function startExport(
   const tmpDir = await mkdtemp(join(app.getPath('temp'), 'cancun-export-'))
   const filterPath = join(tmpDir, 'audio.txt').replace(/\\/g, '/')
   const sinkPort = await freePort()
-  const plan = buildExport(project, { output, encoder, filterPath, input: `tcp://127.0.0.1:${sinkPort}?listen=1` })
+  const voice = await prepareVoices(project, onProgress)
+  const plan = buildExport(project, { output, encoder, filterPath, input: `tcp://127.0.0.1:${sinkPort}?listen=1`, voice })
   if (plan.filter) await writeFile(filterPath, plan.filter, 'utf8')
 
   const win = await renderWindow(window.preload, window.rendererUrl, window.rendererDir)

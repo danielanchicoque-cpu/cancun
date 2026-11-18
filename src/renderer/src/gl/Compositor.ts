@@ -7,8 +7,10 @@ import { BAKE_SIZE, bakeGrade, isNeutral } from '@shared/color'
 import type { CubeLut } from '@shared/cube'
 import { type AdjustClip, type Color, type EffectClip, type MediaClip, type Project, type TextClip, US, defaultAdjust } from '@shared/project'
 import type { ClipFrame, Layer } from '@shared/timeline'
-import { type Landmarks, MAX_TONES, MAX_WARPS, retouchOps } from '@shared/retouch'
+import { type Landmarks, MAX_TONES, MAX_WARPS, MAX_ZONES, needsSkin, retouchOps, skinZones } from '@shared/retouch'
+import { BRIGHTEN, type ColorXform, WHITEN, skinToneXform } from '@shared/skinTones'
 import { ADJUST_FS, BLEND_FS, BLEND_MODES, COPY_FS, EFFECTS, EFFECT_FS, LAYER_FS, QUAD_VS, TRANSITION_FS, TRANSITION_KINDS, YUV_FS } from './shaders'
+import { SKIN_FS, SKIN_VS } from './skinShaders'
 
 type Program = { prog: WebGLProgram; loc: Record<string, WebGLUniformLocation | null> }
 
@@ -112,6 +114,7 @@ export class Compositor {
   private adjustProg: Program
   private transProg: Program
   private yuvProg: Program
+  private skinProg: Program
   private targets = new Map<string, Target>()
   private width = 0
   private height = 0
@@ -131,7 +134,7 @@ export class Compositor {
     const common = ['uMatrix', 'uCanvas']
     this.layerProg = compile(gl, QUAD_VS, LAYER_FS, [
       ...common, 'uSrc', 'uOpacity', 'uGrade', 'uSeg', 'uHasSeg', 'uUseGrade', 'uGradeSize', 'uCrop', 'uFlip', 'uTexel', 'uClipPx',
-      'uSharpen', 'uVignette', 'uChroma', 'uKey', 'uKeyIntensity', 'uKeyShadow', 'uRemoveBg', 'uBgFeather', 'uBgShrink', 'uRetouch', 'uSkinTone', 'uWarpN', 'uWarpA', 'uWarpB', 'uToneN', 'uToneA', 'uToneB', 'uAspect',
+      'uSharpen', 'uVignette', 'uChroma', 'uKey', 'uKeyIntensity', 'uKeyShadow', 'uRemoveBg', 'uBgFeather', 'uBgShrink', 'uWarpN', 'uWarpA', 'uWarpB', 'uToneN', 'uToneA', 'uToneB', 'uAspect',
       'uMaskShape', 'uMaskRect', 'uMaskParams', 'uMaskInvert', 'uLight', 'uLightColor', 'uLightParams', 'uLightSubject', 'uProtectSkin'
     ])
     this.copyProg = compile(gl, QUAD_VS, COPY_FS, [...common, 'uSrc', 'uOpacity', 'uFlipY'])
@@ -140,6 +143,10 @@ export class Compositor {
     this.adjustProg = compile(gl, QUAD_VS, ADJUST_FS, [...common, 'uSrc', 'uGrade', 'uUseGrade', 'uGradeSize', 'uProtectSkin', 'uSharpen', 'uVignette', 'uSize'])
     this.transProg = compile(gl, QUAD_VS, TRANSITION_FS, [...common, 'uA', 'uB', 'uP', 'uKind', 'uSize'])
     this.yuvProg = compile(gl, QUAD_VS, YUV_FS, [...common, 'uSrc', 'uSize', 'uPlane'])
+    this.skinProg = compile(gl, SKIN_VS, SKIN_FS, [
+      'uMode', 'uA', 'uB', 'uC', 'uD', 'uSeg', 'uHasSeg', 'uTexel', 'uDir', 'uPx', 'uParams', 'uWhiten', 'uToneAmt', 'uToneM', 'uToneT',
+      'uWhitenM', 'uWhitenT', 'uBrightM', 'uBrightT', 'uAspect', 'uZoneN', 'uZoneA', 'uZoneB'
+    ])
 
     const buf = gl.createBuffer()
     gl.bindBuffer(gl.ARRAY_BUFFER, buf)
@@ -200,10 +207,12 @@ export class Compositor {
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
     gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE)
-    const bytes = new Uint8Array(data.length)
-    for (let i = 0; i < data.length; i++) bytes[i] = Math.round(Math.min(1, Math.max(0, data[i])) * 255)
+    // Media precisión (16 bits) en vez de 8: el LUT horneado no pierde finura en
+    // degradados (cielos, piel). WebGL2 filtra estas texturas sin extensiones.
+    const clamped = new Float32Array(data.length)
+    for (let i = 0; i < data.length; i++) clamped[i] = Math.min(1, Math.max(0, data[i]))
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1)
-    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB8, size, size, size, 0, gl.RGB, gl.UNSIGNED_BYTE, bytes)
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGB16F, size, size, size, 0, gl.RGB, gl.FLOAT, clamped)
     return tex
   }
 
@@ -241,6 +250,78 @@ export class Compositor {
     return tex
   }
 
+  /**
+   * Retoque de piel en la resolución de la fuente (ver SKIN_FS). Devuelve la textura ya
+   * retocada, que el shader del clip usa en lugar de la original.
+   */
+  private skinPass(c: MediaClip, src: WebGLTexture, seg: WebGLTexture, marks: Landmarks | undefined, sw: number, sh: number): WebGLTexture {
+    const gl = this.gl
+    const r = c.retouch
+    const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null
+    const prevViewport = gl.getParameter(gl.VIEWPORT) as Int32Array
+    const blending = gl.isEnabled(gl.BLEND)
+    gl.disable(gl.BLEND)
+    const { prog, loc } = this.skinProg
+    gl.useProgram(prog)
+    const size = `${sw}x${sh}`
+    const t = (n: number) => this.target(`skin${n}:${size}`, sw, sh)
+    const zones = skinZones(marks, sw / Math.max(1, sh))
+    gl.uniform2f(loc.uTexel, 1 / sw, 1 / sh)
+    gl.uniform1f(loc.uPx, Math.max(0.35, Math.min(sw, sh) / 1080))
+    gl.uniform4f(loc.uParams, r.smooth, r.removeBlemishes, r.wrinkles, r.evenTone)
+    gl.uniform1f(loc.uWhiten, r.whiten)
+    const tone = r.skinTone ? skinToneXform(r.skinTone) : null
+    gl.uniform1f(loc.uToneAmt, tone ? r.skinToneAmount : 0)
+    const setX = (m: WebGLUniformLocation | null, v: WebGLUniformLocation | null, x: ColorXform) => {
+      gl.uniformMatrix3fv(m, false, x.m)
+      gl.uniform3f(v, ...x.t)
+    }
+    setX(loc.uToneM, loc.uToneT, tone ?? WHITEN)
+    setX(loc.uWhitenM, loc.uWhitenT, WHITEN)
+    setX(loc.uBrightM, loc.uBrightT, BRIGHTEN)
+    gl.uniform1f(loc.uAspect, sw / Math.max(1, sh))
+    gl.uniform1i(loc.uZoneN, zones.zoneN)
+    gl.uniform4fv(loc.uZoneA, zones.zoneA, 0, MAX_ZONES * 4)
+    gl.uniform4fv(loc.uZoneB, zones.zoneB, 0, MAX_ZONES * 4)
+    gl.activeTexture(gl.TEXTURE4)
+    gl.bindTexture(gl.TEXTURE_2D, seg)
+    gl.uniform1i(loc.uSeg, 4)
+    gl.uniform1i(loc.uHasSeg, 1)
+    const bindTex = (unit: number, name: 'uA' | 'uB' | 'uC' | 'uD', tex: WebGLTexture) => {
+      gl.activeTexture(gl.TEXTURE0 + unit)
+      gl.bindTexture(gl.TEXTURE_2D, tex)
+      gl.uniform1i(loc[name], unit)
+    }
+    const pass = (mode: number, out: Target, a: WebGLTexture, b = a, cc = a, d = a, dir: [number, number] = [0, 0]) => {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, out.fbo)
+      gl.viewport(0, 0, sw, sh)
+      gl.uniform1i(loc.uMode, mode)
+      gl.uniform2f(loc.uDir, ...dir)
+      bindTex(0, 'uA', a)
+      bindTex(1, 'uB', b)
+      bindTex(2, 'uC', cc)
+      bindTex(3, 'uD', d)
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+      return out.tex
+    }
+    let result: WebGLTexture
+    if (r.smooth > 0 || r.removeBlemishes > 0 || r.wrinkles > 0 || r.evenTone > 0) {
+      const t1 = pass(1, t(1), src, src, src, src, [1, 0])
+      const t2 = pass(2, t(2), t1, t1, t1, t1, [0, 1])
+      const pre = pass(3, t(3), src, t2)
+      const b3 = pass(4, t(4), pre)
+      const b4 = pass(4, t(1), b3)
+      result = pass(5, t(5), src, pre, b3, b4)
+    } else {
+      // Solo blanqueamiento o tono: basta el pase final.
+      result = pass(5, t(5), src)
+    }
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo)
+    gl.viewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3])
+    if (blending) gl.enable(gl.BLEND)
+    return result
+  }
+
   /** Dibuja un clip en el destino actual. */
   private drawClip(p: Project, f: ClipFrame, src: FrameSource | undefined, seg: SegSource | undefined, luts: Map<string, CubeLut>) {
     const c = f.clip
@@ -248,7 +329,7 @@ export class Compositor {
     if (!sourceReady(src)) {
       if (!this.srcTex.has(c.id)) return
     } else {
-      this.upload(c.id, src, this.srcTex, c.retouch.evenTone > 0)
+      this.upload(c.id, src, this.srcTex)
     }
     const gl = this.gl
     const media = p.media[c.mediaId]
@@ -257,12 +338,15 @@ export class Compositor {
     const mh = media.height ?? sh
     const g = clipGeometry(p, c, mw, mh)
     const s = this.scale
+    const segTex = seg ? this.upload(c.id, seg.mask, this.segTex) : null
+    let srcTex = this.srcTex.get(c.id)!
+    if (segTex && needsSkin(c.retouch)) srcTex = this.skinPass(c, srcTex, segTex, seg?.marks, sw, sh)
     const { prog, loc } = this.layerProg
     gl.useProgram(prog)
     gl.uniformMatrix3fv(loc.uMatrix, false, quadMatrix(g.cx * s, g.cy * s, g.w * s, g.h * s, g.rotation))
     gl.uniform2f(loc.uCanvas, this.width, this.height)
     gl.activeTexture(gl.TEXTURE0)
-    gl.bindTexture(gl.TEXTURE_2D, this.srcTex.get(c.id)!)
+    gl.bindTexture(gl.TEXTURE_2D, srcTex)
     gl.uniform1i(loc.uSrc, 0)
     const grade = this.gradeFor(c, luts)
     gl.activeTexture(gl.TEXTURE1)
@@ -271,7 +355,7 @@ export class Compositor {
     gl.uniform1i(loc.uUseGrade, grade ? 1 : 0)
     gl.uniform1f(loc.uGradeSize, BAKE_SIZE)
     gl.activeTexture(gl.TEXTURE2)
-    gl.bindTexture(gl.TEXTURE_2D, seg ? this.upload(c.id, seg.mask, this.segTex) : this.blank)
+    gl.bindTexture(gl.TEXTURE_2D, segTex ?? this.blank)
     gl.uniform1i(loc.uSeg, 2)
     gl.uniform1i(loc.uHasSeg, seg ? 1 : 0)
     gl.uniform1f(loc.uOpacity, Math.max(0, Math.min(1, c.transform.opacity)))
@@ -289,9 +373,6 @@ export class Compositor {
     gl.uniform1f(loc.uBgFeather, c.background.feather)
     gl.uniform1f(loc.uBgShrink, c.background.shrink)
     const r = c.retouch
-    const skinOn = r.skin ? 1 : 0
-    gl.uniform4f(loc.uRetouch, r.smooth * skinOn, r.whiten * skinOn, r.removeBlemishes * skinOn, r.evenTone * skinOn)
-    gl.uniform4f(loc.uSkinTone, ...(r.skinTone ? hexRgb(r.skinTone) : ([0, 0, 0] as [number, number, number])), r.skin && r.skinTone ? r.skinToneAmount : 0)
     const ops = retouchOps(r, seg?.marks, sw / Math.max(1, sh))
     gl.uniform1f(loc.uAspect, sw / Math.max(1, sh))
     gl.uniform1i(loc.uWarpN, ops.warpN)

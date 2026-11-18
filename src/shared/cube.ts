@@ -13,7 +13,15 @@ export class CubeError extends Error {}
 
 const SHAPER_GRID = 33
 
+/** Texto de un .cube desde sus bytes: acepta UTF-8 con o sin BOM y UTF-16 (Resolve/Windows). */
+export function decodeCubeText(bytes: Uint8Array): string {
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) return new TextDecoder('utf-16le').decode(bytes.subarray(2))
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) return new TextDecoder('utf-16be').decode(bytes.subarray(2))
+  return new TextDecoder('utf-8').decode(bytes).replace(/^\uFEFF/, '')
+}
+
 export function parseCube(text: string): CubeLut {
+  text = text.replace(/^\uFEFF/, '')
   let title = ''
   let size3 = 0
   let size1 = 0
@@ -27,7 +35,11 @@ export function parseCube(text: string): CubeLut {
     const first = line.charCodeAt(0)
     const numeric = (first >= 48 && first <= 57) || first === 45 || first === 46 || first === 43
     if (numeric) {
-      const parts = line.split(/\s+/)
+      // Algunos programas escriben comentarios al final de la línea, separan con comas o
+      // usan coma decimal ("0,5 0,25 1" — solo si hay espacios y ningún punto).
+      const cleaned = line.replace(/#.*/, '').trim()
+      const decimalComma = /\s/.test(cleaned) && !cleaned.includes('.')
+      const parts = (decimalComma ? cleaned.replace(/,/g, '.') : cleaned).split(/[\s,;]+/)
       if (parts.length < 3) throw new CubeError(`Línea inválida: ${line}`)
       rows.push(Number(parts[0]), Number(parts[1]), Number(parts[2]))
       continue
@@ -59,7 +71,9 @@ export function parseCube(text: string): CubeLut {
 
   if (!size3 && !size1) throw new CubeError('Falta LUT_3D_SIZE o LUT_1D_SIZE')
   const expected = (size1 + size3 ** 3) * 3
-  if (rows.length !== expected) throw new CubeError(`Se esperaban ${expected / 3} filas y hay ${rows.length / 3}`)
+  // Filas de más (líneas sueltas al final) se ignoran; de menos, el archivo está incompleto.
+  if (rows.length < expected) throw new CubeError(`Se esperaban ${expected / 3} filas y hay ${rows.length / 3}`)
+  rows.length = expected
   if (rows.some((v) => !Number.isFinite(v))) throw new CubeError('Hay valores no numéricos')
 
   // Los LUT 1D (curvas por canal, p. ej. "QT Gamma Compensation") se hornean en un
@@ -111,4 +125,52 @@ export function sampleCube(lut: CubeLut, r: number, g: number, b: number): [numb
     out[c] = (c00 * (1 - dg) + c10 * dg) * (1 - db) + (c01 * (1 - dg) + c11 * dg) * db
   }
   return out
+}
+
+/** Escribe un LUT como texto .cube (orden estándar: rojo varía más rápido). */
+export function serializeCube(lut: CubeLut, title = lut.title): string {
+  const lines = [`TITLE "${title.replace(/"/g, "'")}"`, `LUT_3D_SIZE ${lut.size}`]
+  if (lut.domainMin.some((v) => v !== 0) || lut.domainMax.some((v) => v !== 1)) {
+    lines.push(`DOMAIN_MIN ${lut.domainMin.join(' ')}`, `DOMAIN_MAX ${lut.domainMax.join(' ')}`)
+  }
+  for (let i = 0; i < lut.data.length; i += 3) lines.push(`${lut.data[i].toFixed(6)} ${lut.data[i + 1].toFixed(6)} ${lut.data[i + 2].toFixed(6)}`)
+  return lines.join('\n') + '\n'
+}
+
+/**
+ * LUT desde una imagen (los "filtros" de CapCut y de muchas apps son PNG así):
+ *  - cuadrícula cuadrada: 512×512 = 64³ en 8×8 cuadros, 64×64 = 16³ en 4×4, etc.;
+ *  - tira horizontal: 1024×32 = 32³, 289×17 = 17³ (ancho = alto²).
+ * En cada cuadro el rojo crece hacia la derecha, el verde hacia abajo y el azul cambia de
+ * cuadro en cuadro (izquierda→derecha, arriba→abajo). `pixels` en RGBA o BGRA.
+ */
+export function cubeFromImage(pixels: Uint8Array, width: number, height: number, order: 'rgba' | 'bgra' = 'rgba', title = ''): CubeLut | null {
+  let size = 0
+  let tilesPerRow = 0
+  if (width === height * height) {
+    size = height
+    tilesPerRow = height
+  } else if (width === height) {
+    const n = Math.round(Math.cbrt(width * height))
+    if (n * n * n === width * height && width % n === 0) {
+      size = n
+      tilesPerRow = width / n
+    }
+  }
+  if (size < 2 || size > 256) return null
+  const [ri, bi] = order === 'rgba' ? [0, 2] : [2, 0]
+  const data = new Float32Array(size ** 3 * 3)
+  let n = 0
+  for (let b = 0; b < size; b++) {
+    const tx = (b % tilesPerRow) * size
+    const ty = Math.floor(b / tilesPerRow) * size
+    for (let g = 0; g < size; g++)
+      for (let r = 0; r < size; r++) {
+        const p = ((ty + g) * width + tx + r) * 4
+        data[n++] = pixels[p + ri] / 255
+        data[n++] = pixels[p + 1] / 255
+        data[n++] = pixels[p + bi] / 255
+      }
+  }
+  return { title, size, domainMin: [0, 0, 0], domainMax: [1, 1, 1], data }
 }

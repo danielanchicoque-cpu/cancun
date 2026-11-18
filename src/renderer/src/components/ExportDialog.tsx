@@ -224,7 +224,9 @@ export function ExportDialog({ onClose }: { onClose: () => void }) {
                 ? `Listo · ${real.width}×${real.height} · codificado con ${result.encoder}`
                 : error
                   ? ''
-                  : `${Math.round(progress.fraction * 100)}% · ${progress.fps ? `${progress.fps.toFixed(0)} cuadros/s · quedan ~${Math.ceil(progress.eta)} s` : 'preparando…'}`}
+                  : progress.stage && !progress.fps
+                    ? progress.stage
+                    : `${Math.round(progress.fraction * 100)}% · ${progress.fps ? `${progress.fps.toFixed(0)} cuadros/s · quedan ~${Math.ceil(progress.eta)} s` : 'preparando…'}`}
             </div>
           </div>
         )}

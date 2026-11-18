@@ -207,3 +207,41 @@ test('retoque: sin puntos no hay deformación; con cara, los ojos más grandes g
   // Con la sección apagada no se deforma nada.
   assert.equal(retouchOps({ ...r, features: false }, { face, pose: null }, 16 / 9).warpN, 0)
 })
+
+test('retoque: el suavizado pide la cara y protege ojos, cejas y labios; nariz estereoscópica da luz y sombra', async () => {
+  const { FACE_POINTS, needsFace, needsSkin, retouchOps, skinZones, ZONE_PROTECT, ZONE_WRINKLE, TONE_HIGHLIGHT, TONE_SHADOW } = await import('../src/shared/retouch.ts')
+  const { defaultRetouch } = await import('../src/shared/project.ts')
+  const { SKIN_TONES, skinToneXform, applyXform } = await import('../src/shared/skinTones.ts')
+  const r = { ...defaultRetouch(), smooth: 0.4, wrinkles: 0.3 }
+  assert.ok(needsFace(r) && needsSkin(r))
+  // Cara sintética centrada.
+  const pos: Record<number, [number, number]> = {
+    10: [0.5, 0.2], 152: [0.5, 0.8], 234: [0.3, 0.5], 454: [0.7, 0.5], 468: [0.42, 0.42], 473: [0.58, 0.42],
+    33: [0.37, 0.42], 133: [0.46, 0.42], 362: [0.54, 0.42], 263: [0.63, 0.42], 1: [0.5, 0.55], 129: [0.46, 0.57], 358: [0.54, 0.57],
+    6: [0.5, 0.45], 168: [0.5, 0.42], 4: [0.5, 0.53], 61: [0.44, 0.66], 291: [0.56, 0.66], 0: [0.5, 0.63], 17: [0.5, 0.7],
+    13: [0.5, 0.65], 14: [0.5, 0.67], 105: [0.41, 0.36], 334: [0.59, 0.36], 172: [0.36, 0.7], 397: [0.64, 0.7], 132: [0.32, 0.62], 361: [0.68, 0.62],
+    159: [0.42, 0.41], 145: [0.42, 0.43], 386: [0.58, 0.41], 374: [0.58, 0.43]
+  }
+  const face = new Float32Array(FACE_POINTS.length * 2)
+  FACE_POINTS.forEach((p, i) => face.set(pos[p] ?? [0.5, 0.5], i * 2))
+  const z = skinZones({ face, pose: null }, 1)
+  const kinds = Array.from({ length: z.zoneN }, (_, i) => z.zoneB[i * 4])
+  assert.equal(kinds.filter((k) => k === ZONE_PROTECT).length, 6)
+  assert.ok(kinds.filter((k) => k === ZONE_WRINKLE).length >= 7)
+  // La zona protegida del ojo izquierdo está centrada en el ojo (y hacia arriba en uv).
+  assert.ok(Math.abs(z.zoneA[0] - 0.42) < 1e-6 && Math.abs(z.zoneA[1] - 0.58) < 1e-6)
+  assert.equal(skinZones(null, 1).zoneN, 0)
+
+  const ops = retouchOps({ ...defaultRetouch(), noseStereo: 0.5 }, { face, pose: null }, 1)
+  const tones = Array.from({ length: ops.toneN }, (_, i) => ops.toneB[i * 4])
+  assert.equal(tones.filter((k) => k === TONE_HIGHLIGHT).length, 2)
+  assert.equal(tones.filter((k) => k === TONE_SHADOW).length, 2)
+
+  // Tonos de piel: nueve muestras de claro a oscuro; los colores viejos van al más parecido.
+  assert.equal(SKIN_TONES.length, 9)
+  assert.equal(skinToneXform('#d2a687'), SKIN_TONES[2])
+  assert.ok(SKIN_TONES.includes(skinToneXform('#d9a47f') as never))
+  const lighter = applyXform(SKIN_TONES[0], [0.62, 0.45, 0.36])
+  const darker = applyXform(SKIN_TONES[8], [0.62, 0.45, 0.36])
+  assert.ok(lighter[0] + lighter[1] > darker[0] + darker[1])
+})

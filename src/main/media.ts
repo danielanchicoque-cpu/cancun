@@ -62,7 +62,13 @@ export async function probe(path: string): Promise<Media> {
   const seconds = Number(info.format.duration ?? v?.duration ?? a?.duration ?? 0)
   let width = v?.width
   let height = v?.height
-  const rotation = Math.abs(Number(v?.tags?.rotate ?? v?.side_data_list?.[0]?.rotation ?? 0))
+  // Los videos de iPhone traen varios datos laterales (Dolby Vision primero, la matriz de
+  // giro después): hay que buscar el que tenga la rotación, no tomar el primero.
+  // Se guarda en grados en sentido horario: la etiqueta "rotate" ya viene así y la matriz
+  // de ffprobe viene antihoraria (-90 = girar 90° a la derecha).
+  const turn = v?.side_data_list?.find((d) => d.rotation !== undefined)?.rotation
+  const cw = v?.tags?.rotate !== undefined ? Number(v.tags.rotate) : -Number(turn ?? 0)
+  const rotation = (((Math.round(cw / 90) * 90) % 360) + 360) % 360
   if (rotation === 90 || rotation === 270) [width, height] = [height, width]
   const [num, den] = (v?.r_frame_rate ?? '30/1').split('/').map(Number)
   return {
@@ -75,6 +81,7 @@ export async function probe(path: string): Promise<Media> {
     height: kind === 'audio' ? undefined : height,
     fps: kind === 'video' && den ? num / den : undefined,
     hasAudio: Boolean(a),
+    rotation: kind === 'video' ? rotation : undefined,
     colorSpace: v?.color_space && v.color_space !== 'unknown' ? v.color_space : undefined
   }
 }

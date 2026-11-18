@@ -766,6 +766,10 @@ function LutBrowser() {
   const project = useEditor((s) => s.project!)
   const current = useMemo(() => targetClip(project)?.color.lut?.path ?? null, [project, selection])
   const refresh = () => api.listLuts().then(setLuts)
+  const report = (added: LutEntry[]) => {
+    if (added.length) toast(`${added.length} LUT importado${added.length === 1 ? '' : 's'}`)
+    return refresh()
+  }
   useEffect(() => {
     void api.syncLuts().finally(refresh)
   }, [])
@@ -785,8 +789,11 @@ function LutBrowser() {
       </div>
       <div className="side-content">
         <div className="inline">
-          <button className="btn" onClick={() => api.importLuts().then(refresh).catch((e) => toast(String(e), true))}>
+          <button className="btn" title="Archivos .cube o filtros .png" onClick={() => api.importLuts().then(report).catch((e) => toast(String(e), true))}>
             <Icon name="plus" size={12} /> Importar
+          </button>
+          <button className="btn" title="Trae todos los LUT de una carpeta y sus subcarpetas" onClick={() => api.importLutFolder().then(report).catch((e) => toast(String(e), true))}>
+            <Icon name="plus" size={12} /> Carpeta
           </button>
           <button
             className="btn"
