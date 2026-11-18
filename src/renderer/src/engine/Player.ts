@@ -398,7 +398,12 @@ export class Player {
         if (this.segmenter && ready && needsSegmentation(vis.clip, protectsSkinBelow(p))) {
           // Mientras el video busca, su cuadro aún es el viejo: no se pide máscara de él.
           const video = slot.el instanceof HTMLVideoElement ? slot.el : null
-          const seg = video?.seeking ? this.segmenter.latestFor(clip.id) : this.segmenter.request(clip.id, slot.el, video?.currentTime ?? 0, segNeeds(vis.clip))
+          // En pausa, si ya hay máscara de este mismo cuadro no se pide otra: antes cada
+          // máscara nueva provocaba un repintado que pedía otra, sin fin (la GPU nunca
+          // descansaba y todo, hasta el desplazamiento de los paneles, se sentía lento).
+          const t = video?.currentTime ?? 0
+          const settled = !this.playing && (video ? this.segmenter.hasFresh(clip.id, t) : this.segmenter.has(clip.id))
+          const seg = video?.seeking || settled ? this.segmenter.latestFor(clip.id) : this.segmenter.request(clip.id, slot.el, t, segNeeds(vis.clip))
           if (seg) segs.set(clip.id, seg)
         }
       }

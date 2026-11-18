@@ -1,7 +1,7 @@
 {
   "name": "cancun",
   "productName": "Cancun",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Editor de video de escritorio con CLI para Claude",
   "main": "out/main/index.js",
   "type": "module",
@@ -44,7 +44,10 @@
   "author": "Daniel Anchicoque Martínez",
   "license": "MIT",
   "homepage": "https://github.com/danielanchicoque-cpu/cancun",
-  "repository": { "type": "git", "url": "git+https://github.com/danielanchicoque-cpu/cancun.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/danielanchicoque-cpu/cancun.git"
+  },
   "build": {
     "appId": "com.daniel.cancun",
     "productName": "Cancun",
@@ -87,7 +90,8 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "artifactName": "Cancun-Instalador-${version}.${ext}",
-      "language": "3082"
+      "language": "3082",
+      "include": "build/installer.nsh"
     }
   }
 }
