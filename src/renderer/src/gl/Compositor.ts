@@ -344,7 +344,12 @@ export class Compositor {
     const s = this.scale
     const segTex = seg ? this.upload(c.id, seg.mask, this.segTex) : null
     let srcTex = this.srcTex.get(c.id)!
-    if (segTex && needsSkin(c.retouch)) srcTex = this.skinPass(c, srcTex, segTex, seg?.marks, sw, sh)
+    if (segTex && needsSkin(c.retouch)) {
+      // El retoque de piel se calcula al tamaño en que el clip se ve (en la vista previa
+      // suele ser menos de la mitad de píxeles); al exportar el lienzo es del tamaño del video.
+      const k = Math.min(1, Math.max((g.w * s) / Math.max(1, sw), (g.h * s) / Math.max(1, sh)))
+      srcTex = this.skinPass(c, srcTex, segTex, seg?.marks, Math.max(2, Math.round(sw * k)), Math.max(2, Math.round(sh * k)))
+    }
     const { prog, loc } = this.layerProg
     gl.useProgram(prog)
     gl.uniformMatrix3fv(loc.uMatrix, false, quadMatrix(g.cx * s, g.cy * s, g.w * s, g.h * s, g.rotation))

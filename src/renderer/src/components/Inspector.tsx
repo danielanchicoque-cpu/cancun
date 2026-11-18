@@ -33,6 +33,7 @@ import { EFFECTS } from '../gl/shaders'
 import { BLENDS, MASKS, TRANSITIONS } from './catalog'
 import { SKIN_TONES as SKIN_TONE_LIST } from '@shared/skinTones'
 import { Icon } from './icons'
+import { getPlayer } from './Preview'
 
 const KEY_EPS = US / 120
 
@@ -624,6 +625,23 @@ const FEATURE_TABS = {
   brows: { label: 'Cejas', keys: [['browNatural', 'Natural', 'pos'], ['browThick', 'Grosor'], ['browHeight', 'Altura']] }
 } as const
 
+/** Cuadrito con la cara detectada (como CapCut al ajustar rostro y rasgos). */
+function FaceThumb({ clip }: { clip: MediaClip }) {
+  const [src, setSrc] = useState<string | null>(null)
+  const time = useEditor((s) => s.time)
+  const r = clip.retouch
+  useEffect(() => {
+    // Se pide un poco después: la detección de la cara llega del worker con retraso.
+    const t = setTimeout(() => setSrc(getPlayer()?.faceThumb(clip.id) ?? null), 250)
+    return () => clearTimeout(t)
+  }, [clip.id, time, r])
+  return (
+    <div className="face-thumb" title={src ? 'Cara detectada' : 'Buscando la cara…'}>
+      {src ? <img src={src} alt="Cara detectada" /> : <span>Buscando la cara…</span>}
+    </div>
+  )
+}
+
 function RetouchTab({ clip }: { clip: MediaClip }) {
   const r = clip.retouch
   const live = useLive()
@@ -650,6 +668,7 @@ function RetouchTab({ clip }: { clip: MediaClip }) {
       </div>
       {part === 'face' ? (
         <>
+          <FaceThumb clip={clip} />
           <Group title="Piel" toggle={{ on: r.skin, set: (v) => patch({ skin: v }) }} onReset={() => resetKeys(RETOUCH_SKIN, { skinTone: null, skinToneAmount: 0.5 })}>
             {pos('smooth', 'Suavizar')}
             {pos('whiten', 'Blanqueamiento')}

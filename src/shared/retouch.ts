@@ -91,7 +91,7 @@ const norm = (a: V): V => {
 
 /**
  * Deformaciones y zonas para un cuadro. \`aspect\` = ancho / alto de la fuente. Las
- * coordenadas de salida son uv de la textura (y hacia arriba) con x multiplicada por el
+ * coordenadas de salida son uv de la textura (y hacia abajo, como la imagen) con x multiplicada por el
  * aspecto, para que los círculos sean círculos.
  */
 export function retouchOps(r: Retouch, marks: Landmarks | null | undefined, aspect: number): RetouchOps {
@@ -116,7 +116,7 @@ export function retouchOps(r: Retouch, marks: Landmarks | null | undefined, aspe
 
   const face = marks?.face
   if (face && face.length >= FACE_POINTS.length * 2) {
-    const pt = (idx: (typeof FACE_POINTS)[number]): V => [face[F[idx] * 2] * aspect, 1 - face[F[idx] * 2 + 1]]
+    const pt = (idx: (typeof FACE_POINTS)[number]): V => [face[F[idx] * 2] * aspect, face[F[idx] * 2 + 1]]
     const top = pt(10)
     const chin = pt(152)
     const center = mid(top, chin)
@@ -199,7 +199,7 @@ export function retouchOps(r: Retouch, marks: Landmarks | null | undefined, aspe
 
   const pose = marks?.pose
   if (r.body && pose && pose.length >= 33 * 3) {
-    const pt = (i: number): V => [pose[i * 3] * aspect, 1 - pose[i * 3 + 1]]
+    const pt = (i: number): V => [pose[i * 3] * aspect, pose[i * 3 + 1]]
     const vis = (i: number) => pose[i * 3 + 2]
     if (vis(P.lShoulder) > 0.3 && vis(P.rShoulder) > 0.3) {
       const shL = pt(P.lShoulder)
@@ -207,11 +207,11 @@ export function retouchOps(r: Retouch, marks: Landmarks | null | undefined, aspe
       const shoulders = mid(shL, shR)
       const shoulderW = dist(shL, shR)
       const hipsOk = vis(P.lHip) > 0.3 && vis(P.rHip) > 0.3
-      const hips = hipsOk ? mid(pt(P.lHip), pt(P.rHip)) : add(shoulders, [0, -shoulderW * 1.3])
+      const hips = hipsOk ? mid(pt(P.lHip), pt(P.rHip)) : add(shoulders, [0, shoulderW * 1.3])
       const hipW = hipsOk ? dist(pt(P.lHip), pt(P.rHip)) : shoulderW * 0.7
       const torsoH = dist(shoulders, hips)
       const torso = mid(shoulders, hips)
-      const head = vis(P.nose) > 0.3 ? pt(P.nose) : add(shoulders, [0, shoulderW * 0.6])
+      const head = vis(P.nose) > 0.3 ? pt(P.nose) : add(shoulders, [0, -shoulderW * 0.6])
 
       warp(torso, shoulderW * 1.25, torsoH * 1.5, WARP_SCALE, -0.12 * r.slim, 0)
       warp(head, shoulderW * 0.5, shoulderW * 0.55, WARP_SCALE, -0.15 * r.head, -0.15 * r.head)
@@ -257,7 +257,7 @@ export function skinZones(marks: Landmarks | null | undefined, aspect: number): 
   }
   const face = marks?.face
   if (!face || face.length < FACE_POINTS.length * 2) return { zoneA, zoneB, zoneN }
-  const pt = (idx: (typeof FACE_POINTS)[number]): V => [face[F[idx] * 2] * aspect, 1 - face[F[idx] * 2 + 1]]
+  const pt = (idx: (typeof FACE_POINTS)[number]): V => [face[F[idx] * 2] * aspect, face[F[idx] * 2 + 1]]
   const top = pt(10)
   const chin = pt(152)
   const up = norm(sub(top, chin))

@@ -296,3 +296,8 @@ input[type='checkbox'].chk:checked::after, .check input[type='checkbox']:checked
 /* Pestañas rectangulares como las subpestañas de CapCut (antes eran píldoras redondas). */
 .pill-tabs button, .chip-tabs button { border-radius: 5px !important; }
 .pill-tabs { border-radius: 6px !important; }
+
+/* Cara detectada (retoque), como el cuadrito de CapCut. */
+.face-thumb { width: 64px; height: 64px; border-radius: 6px; overflow: hidden; border: 2px solid var(--accent); background: var(--panel-2); display: grid; place-items: center; margin: 4px 0 10px; }
+.face-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.face-thumb span { font-size: 9px; color: var(--dim); text-align: center; padding: 4px; }

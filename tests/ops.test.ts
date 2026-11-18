@@ -228,8 +228,9 @@ test('retoque: el suavizado pide la cara y protege ojos, cejas y labios; nariz e
   const kinds = Array.from({ length: z.zoneN }, (_, i) => z.zoneB[i * 4])
   assert.equal(kinds.filter((k) => k === ZONE_PROTECT).length, 6)
   assert.ok(kinds.filter((k) => k === ZONE_WRINKLE).length >= 7)
-  // La zona protegida del ojo izquierdo está centrada en el ojo (y hacia arriba en uv).
-  assert.ok(Math.abs(z.zoneA[0] - 0.42) < 1e-6 && Math.abs(z.zoneA[1] - 0.58) < 1e-6)
+  // La zona protegida del ojo izquierdo está centrada en el ojo (uv con y hacia abajo,
+  // igual que la textura: antes se volteaba y el retoque caía en el pecho).
+  assert.ok(Math.abs(z.zoneA[0] - 0.42) < 1e-6 && Math.abs(z.zoneA[1] - 0.42) < 1e-6)
   assert.equal(skinZones(null, 1).zoneN, 0)
 
   const ops = retouchOps({ ...defaultRetouch(), noseStereo: 0.5 }, { face, pose: null }, 1)
