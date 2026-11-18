@@ -6,7 +6,7 @@ import { type MediaClip, type Project, US, clipEnd } from '@shared/project'
 import { layersAt } from '@shared/timeline'
 import { api } from '../api'
 import { Compositor, type FrameSource, type SegSource } from '../gl/Compositor'
-import { type SegResult, Segmenter, needsSegmentation, segNeeds } from './Segmenter'
+import { type SegResult, Segmenter, needsSegmentation, protectsSkinBelow, segNeeds } from './Segmenter'
 import { type FrameProvider, openProvider } from './sources'
 import { decodeStats } from './ClipDecoder'
 
@@ -37,13 +37,13 @@ export async function renderJob(job: RenderJob, send: (data: Uint8Array, index: 
   const luts = new Map<string, CubeLut>()
   for (const t of p.tracks)
     for (const c of t.clips)
-      if (c.type === 'media' && c.color.lut && !luts.has(c.color.lut.path)) {
+      if ((c.type === 'media' || c.type === 'adjust') && c.color.lut && !luts.has(c.color.lut.path)) {
         const l = await api.loadLut(c.color.lut.path)
         luts.set(c.color.lut.path, { ...l, data: new Float32Array(l.data) })
       }
 
   const providers = new Map<string, Promise<FrameProvider>>()
-  const segmenter = p.tracks.some((t) => t.clips.some((c) => c.type === 'media' && needsSegmentation(c))) ? await Segmenter.get() : null
+  const segmenter = p.tracks.some((t) => t.clips.some((c) => c.type === 'media' && needsSegmentation(c, protectsSkinBelow(p)))) ? await Segmenter.get() : null
   const providerFor = (clip: MediaClip) => {
     let pr = providers.get(clip.id)
     if (!pr) {
@@ -87,7 +87,7 @@ export async function renderJob(job: RenderJob, send: (data: Uint8Array, index: 
         lap('decode')
         if (!src) continue
         sources.set(f.clip.id, src)
-        if (segmenter && needsSegmentation(f.clip)) {
+        if (segmenter && needsSegmentation(f.clip, protectsSkinBelow(p))) {
           const prev = pendingMask.get(f.clip.id)
           const { result } = await segmenter.submit(f.clip.id, src as TexImageSource, segNeeds(f.clip))
           pendingMask.set(f.clip.id, result)

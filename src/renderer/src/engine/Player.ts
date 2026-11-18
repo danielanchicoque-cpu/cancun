@@ -8,7 +8,7 @@ import { type ClipFrame, audibleAt, clipsNear, layersAt } from '@shared/timeline
 import { type VoiceResult, voiceJob, voiceKey } from '@shared/voice'
 import { api, mediaUrl } from '../api'
 import { Compositor, type FrameSource, type SegSource } from '../gl/Compositor'
-import { Segmenter, needsSegmentation, segNeeds } from './Segmenter'
+import { Segmenter, needsSegmentation, protectsSkinBelow, segNeeds } from './Segmenter'
 
 const PRELOAD_BEFORE = 1 * US
 const PRELOAD_AFTER = 3 * US
@@ -74,9 +74,11 @@ export class Player {
     let wantsSeg = false
     for (const t of p.tracks)
       for (const c of t.clips) {
+        // Los LUT de las capas de ajuste también (antes solo se cargaban los de los clips
+        // y la capa de ajuste se veía sin LUT).
+        if ((c.type === 'media' || c.type === 'adjust') && c.color.lut) this.ensureLut(c.color.lut.path)
         if (c.type !== 'media') continue
-        if (c.color.lut) this.ensureLut(c.color.lut.path)
-        if (needsSegmentation(c)) wantsSeg = true
+        if (needsSegmentation(c, protectsSkinBelow(p))) wantsSeg = true
       }
     if (wantsSeg) this.ensureSegmenter()
     const alive = new Set(p.tracks.flatMap((t) => t.clips.map((c) => c.id)))
@@ -149,7 +151,7 @@ export class Player {
     // Para la captura exacta (CLI, portadas) la máscara tiene que ser de este mismo cuadro.
     const waitingMask = frames.some(
       (f) =>
-        needsSegmentation(f.clip) &&
+        needsSegmentation(f.clip, protectsSkinBelow(p)) &&
         (!this.segmenter || (p.media[f.clip.mediaId]?.kind === 'image' ? !this.segmenter.has(f.clip.id) : !this.segmenter.hasFresh(f.clip.id, f.source / US)))
     )
     return (
@@ -367,7 +369,7 @@ export class Player {
       if (vis) {
         sources.set(clip.id, slot.el)
         const ready = slot.el instanceof HTMLVideoElement ? slot.el.readyState >= 2 : slot.el.complete
-        if (this.segmenter && ready && needsSegmentation(vis.clip)) {
+        if (this.segmenter && ready && needsSegmentation(vis.clip, protectsSkinBelow(p))) {
           // Mientras el video busca, su cuadro aún es el viejo: no se pide máscara de él.
           const video = slot.el instanceof HTMLVideoElement ? slot.el : null
           const seg = video?.seeking ? this.segmenter.latestFor(clip.id) : this.segmenter.request(clip.id, slot.el, video?.currentTime ?? 0, segNeeds(vis.clip))

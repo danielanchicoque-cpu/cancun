@@ -294,7 +294,9 @@ void main() {
   }
   vec3 ungraded = c;
   c = grade(c);
-  if (uProtectSkin) c = mix(c, ungraded, (uHasSeg ? max(seg.g, skinByColor(ungraded) * 0.5) : skinByColor(ungraded)) * 0.85);
+  // Proteger piel como CapCut: sobre la piel que detecta la IA vuelve el 70 % del color
+  // original. Sin máscara (no debería pasar: se pide la segmentación) se usa el color.
+  if (uProtectSkin) c = mix(c, ungraded, (uHasSeg ? seg.g : skinByColor(ungraded)) * 0.7);
   if (uLight) {
     vec2 lp = (uLightParams.xy * 0.5 + 0.5);
     vec2 d = (vUv - lp) * uClipPx / max(uClipPx.x, uClipPx.y);
@@ -1151,6 +1153,8 @@ uniform sampler3D uGrade;
 uniform bool uUseGrade;
 uniform float uGradeSize;
 uniform bool uProtectSkin;
+uniform sampler2D uSkin;       // piel de lo que hay debajo (máscara de IA de cada clip)
+uniform bool uHasSkin;
 uniform float uSharpen;
 uniform float uVignette;
 uniform vec2 uSize;
@@ -1180,7 +1184,28 @@ void main() {
     vec3 coord = clamp(c, 0.0, 1.0) * ((uGradeSize - 1.0) / uGradeSize) + 0.5 / uGradeSize;
     c = texture(uGrade, coord).rgb;
   }
-  if (uProtectSkin) c = mix(c, o, skinByColor(o) * 0.85);
+  // Como CapCut: 70 % del color original sobre la piel detectada por la IA en los clips
+  // de debajo. Solo si ningún clip trae máscara se cae a detectar la piel por color.
+  if (uProtectSkin) c = mix(c, o, (uHasSkin ? texture(uSkin, vec2(vUv.x, 1.0 - vUv.y)).r : skinByColor(o)) * 0.7);
   if (uVignette > 0.0) c *= mix(1.0, smoothstep(0.85, 0.2, length(vUv - 0.5) * 1.4), uVignette * 0.9);
   outColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+}`
+
+/** Pinta la máscara de piel de un clip en la capa de piel del cuadro (para "proteger piel"). */
+export const SKINMASK_FS = `#version 300 es
+precision highp float;
+in vec2 vUv;
+uniform sampler2D uSeg;
+uniform bool uHasSeg;
+uniform vec4 uCrop;
+uniform vec2 uFlip;
+uniform float uOpacity;
+out vec4 outColor;
+void main() {
+  vec2 uv = vec2(mix(uCrop.x, 1.0 - uCrop.z, vUv.x), mix(uCrop.y, 1.0 - uCrop.w, vUv.y));
+  if (uFlip.x > 0.5) uv.x = 1.0 - uv.x;
+  if (uFlip.y > 0.5) uv.y = 1.0 - uv.y;
+  float skin = uHasSeg ? texture(uSeg, uv).g : 0.0;
+  // Premultiplicado: un clip encima tapa la piel de los de abajo.
+  outColor = vec4(vec3(skin * uOpacity), uOpacity);
 }`

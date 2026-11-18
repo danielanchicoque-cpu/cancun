@@ -9,7 +9,7 @@ import { type AdjustClip, type Color, type EffectClip, type MediaClip, type Proj
 import type { ClipFrame, Layer } from '@shared/timeline'
 import { type Landmarks, MAX_TONES, MAX_WARPS, MAX_ZONES, needsSkin, retouchOps, skinZones } from '@shared/retouch'
 import { BRIGHTEN, type ColorXform, WHITEN, skinToneXform } from '@shared/skinTones'
-import { ADJUST_FS, BLEND_FS, BLEND_MODES, COPY_FS, EFFECTS, EFFECT_FS, LAYER_FS, QUAD_VS, TRANSITION_FS, TRANSITION_KINDS, YUV_FS } from './shaders'
+import { ADJUST_FS, BLEND_FS, BLEND_MODES, COPY_FS, SKINMASK_FS, EFFECTS, EFFECT_FS, LAYER_FS, QUAD_VS, TRANSITION_FS, TRANSITION_KINDS, YUV_FS } from './shaders'
 import { SKIN_FS, SKIN_VS } from './skinShaders'
 
 type Program = { prog: WebGLProgram; loc: Record<string, WebGLUniformLocation | null> }
@@ -115,6 +115,9 @@ export class Compositor {
   private transProg: Program
   private yuvProg: Program
   private skinProg: Program
+  private skinMaskProg: Program
+  /** ¿Algún clip pintó su máscara de piel en este cuadro? */
+  private skinDrawn = false
   private targets = new Map<string, Target>()
   private width = 0
   private height = 0
@@ -140,9 +143,10 @@ export class Compositor {
     this.copyProg = compile(gl, QUAD_VS, COPY_FS, [...common, 'uSrc', 'uOpacity', 'uFlipY'])
     this.blendProg = compile(gl, QUAD_VS, BLEND_FS, [...common, 'uBase', 'uLayer', 'uMode'])
     this.effectProg = compile(gl, QUAD_VS, EFFECT_FS, [...common, 'uSrc', 'uEffect', 'uTime', 'uIntensity', 'uSpeed', 'uSize'])
-    this.adjustProg = compile(gl, QUAD_VS, ADJUST_FS, [...common, 'uSrc', 'uGrade', 'uUseGrade', 'uGradeSize', 'uProtectSkin', 'uSharpen', 'uVignette', 'uSize'])
+    this.adjustProg = compile(gl, QUAD_VS, ADJUST_FS, [...common, 'uSrc', 'uGrade', 'uUseGrade', 'uGradeSize', 'uProtectSkin', 'uSkin', 'uHasSkin', 'uSharpen', 'uVignette', 'uSize'])
     this.transProg = compile(gl, QUAD_VS, TRANSITION_FS, [...common, 'uA', 'uB', 'uP', 'uKind', 'uSize'])
     this.yuvProg = compile(gl, QUAD_VS, YUV_FS, [...common, 'uSrc', 'uSize', 'uPlane'])
+    this.skinMaskProg = compile(gl, QUAD_VS, SKINMASK_FS, ['uMatrix', 'uCanvas', 'uSeg', 'uHasSeg', 'uCrop', 'uFlip', 'uOpacity'])
     this.skinProg = compile(gl, SKIN_VS, SKIN_FS, [
       'uMode', 'uA', 'uB', 'uC', 'uD', 'uSeg', 'uHasSeg', 'uTexel', 'uDir', 'uPx', 'uParams', 'uWhiten', 'uToneAmt', 'uToneM', 'uToneT',
       'uWhitenM', 'uWhitenT', 'uBrightM', 'uBrightT', 'uAspect', 'uZoneN', 'uZoneA', 'uZoneB'
@@ -392,6 +396,36 @@ export class Compositor {
     gl.uniform1i(loc.uLightSubject, c.light.subjectOnly ? 1 : 0)
     gl.uniform1i(loc.uProtectSkin, c.color.protectSkin && grade ? 1 : 0)
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+    this.drawSkinMask(c, segTex, quadMatrix(g.cx * s, g.cy * s, g.w * s, g.h * s, g.rotation))
+  }
+
+  /**
+   * Capa de piel del cuadro: cada clip pinta su máscara de piel con su misma geometría
+   * (los de encima tapan a los de abajo). La usan las capas de ajuste con "proteger piel".
+   */
+  private drawSkinMask(c: MediaClip, segTex: WebGLTexture | null, matrix: Float32Array) {
+    const gl = this.gl
+    const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING) as WebGLFramebuffer | null
+    const blending = gl.isEnabled(gl.BLEND)
+    const skin = this.target('skin')
+    gl.bindFramebuffer(gl.FRAMEBUFFER, skin.fbo)
+    gl.enable(gl.BLEND)
+    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA)
+    const { prog, loc } = this.skinMaskProg
+    gl.useProgram(prog)
+    gl.uniformMatrix3fv(loc.uMatrix, false, matrix)
+    gl.uniform2f(loc.uCanvas, this.width, this.height)
+    gl.activeTexture(gl.TEXTURE2)
+    gl.bindTexture(gl.TEXTURE_2D, segTex ?? this.blank)
+    gl.uniform1i(loc.uSeg, 2)
+    gl.uniform1i(loc.uHasSeg, segTex ? 1 : 0)
+    gl.uniform4f(loc.uCrop, c.crop.left, c.crop.top, c.crop.right, c.crop.bottom)
+    gl.uniform2f(loc.uFlip, c.transform.flipX ? 1 : 0, c.transform.flipY ? 1 : 0)
+    gl.uniform1f(loc.uOpacity, Math.max(0, Math.min(1, c.transform.opacity)))
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
+    if (segTex) this.skinDrawn = true
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo)
+    if (!blending) gl.disable(gl.BLEND)
   }
 
   private textTexture(p: Project, clip: TextClip) {
@@ -568,6 +602,10 @@ export class Compositor {
     gl.uniform1i(loc.uUseGrade, grade ? 1 : 0)
     gl.uniform1f(loc.uGradeSize, BAKE_SIZE)
     gl.uniform1i(loc.uProtectSkin, clip.color.protectSkin ? 1 : 0)
+    gl.activeTexture(gl.TEXTURE2)
+    gl.bindTexture(gl.TEXTURE_2D, this.target('skin').tex)
+    gl.uniform1i(loc.uSkin, 2)
+    gl.uniform1i(loc.uHasSkin, this.skinDrawn ? 1 : 0)
     gl.uniform1f(loc.uSharpen, a.sharpen)
     gl.uniform1f(loc.uVignette, a.vignette)
     gl.uniform2f(loc.uSize, this.width, this.height)
@@ -583,6 +621,8 @@ export class Compositor {
   ) {
     const gl = this.gl
     this.acc = 'accA'
+    this.bind(this.target('skin'), [0, 0, 0, 0])
+    this.skinDrawn = false
     this.bind(this.target(this.acc), [...hexRgb(p.canvas.background), 1])
 
     for (const layer of layers) {
