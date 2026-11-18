@@ -53,13 +53,28 @@ export function voiceKey(j: VoiceJob): string {
 }
 
 /** Sube cuando cambie el motor, para no reutilizar resultados viejos de la caché. */
-export const VOICE_ENGINE_VERSION = 3
+export const VOICE_ENGINE_VERSION = 4
 
 /** Ajustes del motor espectral para un trabajo. Aislar manda sobre reducir ruido. */
 export function voiceOptions(j: VoiceJob): VoiceOptions | null {
   if (j.isolate) return VOICE_PRESETS.isolate
   if (j.denoise) return VOICE_PRESETS.denoise
   if (j.enhance && j.amount > 0) return { ...VOICE_PRESETS.enhance, reductionDb: VOICE_PRESETS.enhance.reductionDb * j.amount }
+  return null
+}
+
+/**
+ * Plan con el motor neuronal (DeepFilterNet), medido contra CapCut con SI-SDR:
+ * aislar = DeepFilterNet al máximo (9,2 dB frente a 3,8 del motor espectral solo);
+ * reducir = DeepFilterNet + el corte de graves del motor espectral (10,9 frente a 8,7);
+ * solo mejorar = DeepFilterNet limitado a 12 dB × intensidad.
+ * `atten` = límite de atenuación en dB (100 = sin límite); `shape` = pase espectral
+ * posterior sin reducción propia (solo forma de graves y agudos), o null.
+ */
+export function neuralPlan(j: VoiceJob): { atten: number; shape: VoiceOptions | null } | null {
+  if (j.isolate) return { atten: 100, shape: null }
+  if (j.denoise) return { atten: 100, shape: { ...VOICE_PRESETS.denoise, reductionDb: 0 } }
+  if (j.enhance && j.amount > 0) return { atten: Math.round(12 * j.amount), shape: { ...VOICE_PRESETS.enhance, reductionDb: 0 } }
   return null
 }
 

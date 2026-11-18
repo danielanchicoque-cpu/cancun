@@ -26,7 +26,7 @@ Requisitos:
 - LUTs `.cube` y filtros `.png` (cuadrícula 8×8 o tira). Se traen solos los LUT importados en CapCut, los que usan tus proyectos de CapCut (también en la carpeta de borradores personalizada) y los filtros de CapCut que usaste; también puedes importar una carpeta entera. La vista previa y la exportación usan el mismo cálculo de color (16 bits), así que se ven igual. Capa de ajuste con intensidad y opción de proteger el tono de piel.
 - Quitar fondo sin pantalla verde, y retoque de piel, rostro y cuerpo, todo con modelos que corren en tu equipo. El retoque de piel sigue la misma receta que CapCut (suavizado por separación de frecuencias que respeta ojos, cejas y labios) y suma borrar imperfecciones, eliminación de arrugas, blanqueamiento y los nueve tonos de piel de CapCut, más blanqueamiento dental y nariz estereoscópica.
 - Texto y subtítulos automáticos con Whisper local.
-- Audio: onda con dB, normalizar, música y efectos de sonido desde tus carpetas. Motor de voz propio y local: reducir ruido (≈13 dB menos de fondo), aislar voz (quita graves y música y silencia los huecos) y mejorar voz con intensidad 0–100. Se procesa una vez, queda en caché y se oye en la vista previa.
+- Audio: onda con dB, normalizar, música y efectos de sonido desde tus carpetas. Voz local: reducir ruido, aislar voz y mejorar voz con intensidad 0–100. Usa la red neuronal DeepFilterNet (se descarga sola la primera vez, 27 MB) más el motor espectral propio de Cancun; si no hay internet la primera vez, usa solo el motor propio. Medido contra CapCut: aislar voz 9 dB de SI-SDR (el motor propio solo, 4), reducir ruido 11 (solo, 9). Se procesa una vez, queda en caché y se oye en la vista previa.
 - Guardado automático y copias de respaldo.
 - Exportación con control de bitrate; usa NVENC si tienes GPU NVIDIA.
 - Chat dentro de la app y CLI `cancun` para editar por comandos (`cancun help` lista todo).
@@ -72,6 +72,7 @@ El chat integrado usa la sesión de Claude Code de tu terminal: ejecuta `claude`
 
 - [MediaPipe](https://github.com/google-ai-edge/mediapipe) (Google, Apache 2.0): segmentación para quitar fondo y detección de rostro y cuerpo para el retoque.
 - [FFmpeg](https://ffmpeg.org/) (build de [gyan.dev](https://www.gyan.dev/ffmpeg/builds/), GPL v3): mezcla de audio y codificación. Se ejecuta como programa aparte.
+- [DeepFilterNet](https://github.com/Rikorose/DeepFilterNet) (MIT/Apache 2.0): reducción de ruido y aislamiento de voz. Se descarga la primera vez que se usa.
 - [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT) con el modelo de OpenAI Whisper (MIT): subtítulos. Se descargan la primera vez que se usan.
 - [Electron](https://www.electronjs.org/), [React](https://react.dev/), [mp4box.js](https://github.com/gpac/mp4box.js), [zustand](https://github.com/pmndrs/zustand) y [ws](https://github.com/websockets/ws).
 

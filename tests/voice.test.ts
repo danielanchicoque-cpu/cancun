@@ -122,3 +122,15 @@ test('voz: trabajo por archivo completo y opciones por efecto', () => {
   assert.equal(Number(plan.args[i - 4]), 2)
   assert.ok(!plan.filter!.includes('afftdn'))
 })
+
+test('voz: plan del motor neuronal por efecto', async () => {
+  const { neuralPlan } = await import('../src/shared/voice.ts')
+  const base = { path: 'a', start: 0, duration: US, denoise: false, isolate: false, enhance: false, amount: 0 }
+  assert.equal(neuralPlan(base), null)
+  assert.deepEqual(neuralPlan({ ...base, isolate: true, denoise: true }), { atten: 100, shape: null })
+  const d = neuralPlan({ ...base, denoise: true })!
+  assert.equal(d.atten, 100)
+  assert.equal(d.shape!.reductionDb, 0)
+  assert.equal(neuralPlan({ ...base, enhance: true, amount: 0.5 })!.atten, 6)
+  assert.equal(neuralPlan({ ...base, enhance: true, amount: 0 }), null)
+})

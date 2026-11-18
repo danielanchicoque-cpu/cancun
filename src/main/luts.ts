@@ -222,14 +222,14 @@ export async function listLuts(): Promise<LutEntry[]> {
   for (const entry of await readdir(root, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
     const files = await readdir(join(root, entry.name))
-    const cube = files.find((f) => f.toLowerCase().endsWith('.cube'))
-    if (!cube) continue
-    const thumb = files.find((f) => IMAGE.test(f))
-    out.push({
-      name: basename(cube, extname(cube)),
-      path: join(root, entry.name, cube),
-      thumb: thumb ? join(root, entry.name, thumb) : null
-    })
+    // Una carpeta puede tener variantes (p. ej. "8" y "8 piel protegida"): se listan todas.
+    // La miniatura es la del mismo nombre o, si no hay, la de la carpeta.
+    const thumbs = files.filter((f) => IMAGE.test(f))
+    for (const cube of files.filter((f) => f.toLowerCase().endsWith('.cube'))) {
+      const name = basename(cube, extname(cube))
+      const thumb = thumbs.find((t) => basename(t, extname(t)) === name) ?? thumbs[0]
+      out.push({ name, path: join(root, entry.name, cube), thumb: thumb ? join(root, entry.name, thumb) : null })
+    }
   }
   return out.sort((a, b) => a.name.localeCompare(b.name, 'es'))
 }

@@ -10,7 +10,8 @@ import { mkdir, rename, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Worker } from 'node:worker_threads'
 import { US } from '@shared/project'
-import { type VoiceJob, type VoiceResult, voiceKey, voiceOptions, voicePostFilter } from '@shared/voice'
+import { type VoiceJob, type VoiceResult, neuralPlan, voiceKey, voiceOptions, voicePostFilter } from '@shared/voice'
+import { ensureDeepFilter, runDeepFilter } from './deepFilter'
 import { FFMPEG, FFPROBE, run } from './media'
 import workerPath from './voiceWorker?modulePath'
 
@@ -57,13 +58,11 @@ async function channels(path: string): Promise<number> {
   return Math.max(1, Number(out.toString().trim()) || 1)
 }
 
-/** Decodifica el tramo a mono 48 kHz en punto flotante. */
-async function decode(job: VoiceJob): Promise<Float32Array> {
-  const ch = await channels(job.path)
-  const raw = await run(FFMPEG, [
-    '-v', 'error', '-ss', (job.start / US).toFixed(3), '-t', (job.duration / US).toFixed(3), '-i', job.path,
-    '-vn', '-map', '0:a:0', '-ar', String(RATE), '-f', 'f32le', 'pipe:1'
-  ])
+/** Decodifica (un tramo de) un archivo a mono 48 kHz en punto flotante. */
+async function decode(path: string, range?: { start: number; duration: number }): Promise<Float32Array> {
+  const ch = await channels(path)
+  const cut = range ? ['-ss', (range.start / US).toFixed(3), '-t', (range.duration / US).toFixed(3)] : []
+  const raw = await run(FFMPEG, ['-v', 'error', ...cut, '-i', path, '-vn', '-map', '0:a:0', '-ar', String(RATE), '-f', 'f32le', 'pipe:1'])
   const all = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4))
   const mono = new Float32Array(Math.floor(all.length / ch))
   for (let i = 0; i < mono.length; i++) {
@@ -97,13 +96,35 @@ export function prepareVoice(job: VoiceJob, onProgress?: (f: number) => void): P
   const task = (async () => {
     const dir = cacheDir()
     await mkdir(dir, { recursive: true })
-    const dest = join(dir, `${createHash('sha1').update(key).digest('hex').slice(0, 20)}.wav`)
+    const file = (engine: string) => join(dir, `${createHash('sha1').update(key + engine).digest('hex').slice(0, 20)}.wav`)
+    // Motor neuronal si se puede (se descarga la primera vez); si no, el espectral.
+    const plan = neuralPlan(job)
+    const bin = plan ? await ensureDeepFilter((f) => onProgress?.(f * 0.1)) : null
+    for (const engine of bin ? ['df', 'dsp'] : ['dsp']) if (existsSync(file(engine))) return { path: file(engine), start: job.start, duration: job.duration }
+    let samples = await decode(job.path, job)
+    onProgress?.(0.15)
+    let engine = 'dsp'
+    if (bin && plan) {
+      try {
+        const out = await runDeepFilter(bin, samples, RATE, plan.atten)
+        try {
+          samples = await decode(out.path)
+        } finally {
+          await out.cleanup()
+        }
+        onProgress?.(0.6)
+        if (plan.shape) samples = await clean(samples, plan.shape, (f) => onProgress?.(0.6 + f * 0.3))
+        engine = 'df'
+      } catch (err) {
+        console.warn('DeepFilterNet falló; se usa el motor espectral', err)
+      }
+    }
+    if (engine === 'dsp') {
+      const opts = voiceOptions(job)
+      if (opts) samples = await clean(samples, opts, (f) => onProgress?.(0.15 + f * 0.75))
+    }
+    const dest = file(engine)
     const result = { path: dest, start: job.start, duration: job.duration }
-    if (existsSync(dest)) return result
-    const opts = voiceOptions(job)
-    let samples = await decode(job)
-    onProgress?.(0.1)
-    if (opts) samples = await clean(samples, opts, (f) => onProgress?.(0.1 + f * 0.8))
     const tmp = `${dest}.part.wav`
     await encode(samples, voicePostFilter(job), tmp)
     await rm(dest, { force: true })

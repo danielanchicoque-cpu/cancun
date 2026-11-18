@@ -70,8 +70,8 @@ Claves de retoque (0..1 salvo que se diga): `smooth`, `whiten`, `removeBlemishes
 
 ## Notas
 
-- Todo corre en el equipo; la primera vez la voz tarda unos segundos por minuto de audio
-  y queda en caché.
+- Todo corre en el equipo. La voz usa DeepFilterNet (red neuronal, se descarga sola la
+  primera vez) más el motor propio; queda en caché por archivo.
 - Los videos verticales del iPhone (HEVC con giro y HDR) se leen derechos.
 - Exportar con retoque va a unos 4–7 cuadros por segundo en una laptop con RTX 4050
   (la detección de la cara corre en cada cuadro).
