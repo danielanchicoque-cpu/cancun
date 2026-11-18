@@ -153,6 +153,31 @@ function KeyButtons({ ctl }: { ctl: PropCtl }) {
 function NumberInput({ value, onCommit, suffix, width = 74 }: { value: number; onCommit: (v: number) => void; suffix?: string; width?: number }) {
   const [text, setText] = useState<string | null>(null)
   const shown = Math.round(value * 100) / 100
+  // Caja de número con flechas ▲▼ al lado, como en CapCut.
+  return (
+    <span className="num-wrap">
+      <NumberField value={value} shown={shown} text={text} setText={setText} onCommit={onCommit} suffix={suffix} width={Math.max(40, width - 18)} />
+      <span className="spin">
+        <button tabIndex={-1} title="Subir" onClick={() => onCommit(shown + 1)}>
+          <svg width="8" height="5" viewBox="0 0 8 5"><path d="M0 5 4 0 8 5z" fill="currentColor" /></svg>
+        </button>
+        <button tabIndex={-1} title="Bajar" onClick={() => onCommit(shown - 1)}>
+          <svg width="8" height="5" viewBox="0 0 8 5"><path d="M0 0 4 5 8 0z" fill="currentColor" /></svg>
+        </button>
+      </span>
+    </span>
+  )
+}
+
+function NumberField({ shown, text, setText, onCommit, suffix, width }: {
+  value: number
+  shown: number
+  text: string | null
+  setText: (t: string | null) => void
+  onCommit: (v: number) => void
+  suffix?: string
+  width: number
+}) {
   return (
     <input
       className="num"
@@ -193,6 +218,8 @@ interface SliderProps {
   live?: Live
   keys?: PropCtl
   reset?: number
+  /** Marcas en la pista (valores reales), p. ej. los pasos de "Mejorar voz". */
+  marks?: number[]
 }
 
 function Slider(p: SliderProps) {
@@ -205,17 +232,23 @@ function Slider(p: SliderProps) {
         {p.label}
         {p.keys && <KeyButtons ctl={p.keys} />}
       </label>
+      <span className="range-wrap">
+      {p.marks?.map((m) => (
+        <i key={m} className="mark" style={{ left: `${((m - p.min) / (p.max - p.min)) * 100}%` }} />
+      ))}
       <input
         type="range"
         min={p.min}
         max={p.max}
         step={p.step ?? 0.01}
         value={p.value}
+        style={{ '--p': `${((Math.min(p.max, Math.max(p.min, p.value)) - p.min) / (p.max - p.min || 1)) * 100}%` } as React.CSSProperties}
         onPointerDown={() => p.live?.begin()}
         onPointerUp={() => p.live?.end()}
         onChange={(e) => p.onChange(Number(e.target.value))}
         onDoubleClick={() => p.reset !== undefined && p.onChange(p.reset)}
       />
+      </span>
       <NumberInput value={show(p.value)} suffix={p.suffix} onCommit={(n) => p.onChange(clamp(parse(n)))} />
     </div>
   )
@@ -256,7 +289,8 @@ function PropSlider({ clip, prop, label, min, max, step, show, parse, suffix, ke
 }
 
 function Toggle({ on, onChange, title }: { on: boolean; onChange: (v: boolean) => void; title?: string }) {
-  return <button className={`switch ${on ? 'on' : ''}`} title={title} onClick={() => onChange(!on)} />
+  // Casilla cuadrada (como CapCut) en vez de interruptor redondo.
+  return <button className={`switch ${on ? 'on' : ''}`} role="checkbox" aria-checked={on} title={title} onClick={() => onChange(!on)} />
 }
 
 function Group({ title, children, onReset, badge, toggle, open: openDefault = true }: {
@@ -725,16 +759,19 @@ function AudioTab({ clip }: { clip: MediaClip }) {
       {toggle('enhanceVoice', 'Mejorar voz', 'Limpia el fondo, quita barro, da presencia y empareja el volumen: voz de estudio.')}
       {fx.enhanceVoice && (
         <div className="group">
-          <div className="row">
-            <label>Intensidad</label>
-          </div>
-          <div className="chip-tabs">
-            {[0, 0.25, 0.5, 0.75, 1].map((v) => (
-              <button key={v} className={Math.abs((fx.enhanceAmount ?? 1) - v) < 0.01 ? 'active' : ''} onClick={() => update(clip, { audioFx: { enhanceAmount: v } })}>
-                {Math.round(v * 100)}
-              </button>
-            ))}
-          </div>
+          {/* Como CapCut: pasos de 25 con marcas; se aplica al soltar (la voz se reprocesa). */}
+          <Slider
+            label="Intensidad"
+            value={fx.enhanceAmount ?? 1}
+            min={0}
+            max={1}
+            step={0.25}
+            marks={[0, 0.25, 0.5, 0.75, 1]}
+            show={pct}
+            parse={(v) => Math.round(v / 25) / 4}
+            onChange={(v) => update(clip, { audioFx: { enhanceAmount: Math.round(v * 4) / 4 } })}
+            reset={1}
+          />
         </div>
       )}
       {toggle('denoise', 'Reducir el ruido', 'Baja unos 15 dB el ruido de fondo (ventilador, aire, calle) sin tocar la voz.')}

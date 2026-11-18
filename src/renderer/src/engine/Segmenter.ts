@@ -195,7 +195,24 @@ export function segNeeds(clip: { retouch: Retouch }): SegNeeds {
 }
 
 /** ¿Este clip necesita pasar por el worker en este cuadro? */
-export function needsSegmentation(clip: { background: { mode: string }; retouch: Retouch; light: { enabled: boolean; subjectOnly: boolean } }): boolean {
+export function needsSegmentation(
+  clip: { background: { mode: string }; retouch: Retouch; light: { enabled: boolean; subjectOnly: boolean }; color?: { protectSkin?: boolean } },
+  /** Hay una capa de ajuste con "proteger piel" en el proyecto: necesita la piel de todo. */
+  protectBelow = false
+): boolean {
   const r = clip.retouch
-  return clip.background.mode === 'auto' || needsSkin(r) || needsFace(r) || needsPose(r) || (clip.light.enabled && clip.light.subjectOnly)
+  return (
+    protectBelow ||
+    Boolean(clip.color?.protectSkin) ||
+    clip.background.mode === 'auto' ||
+    needsSkin(r) ||
+    needsFace(r) ||
+    needsPose(r) ||
+    (clip.light.enabled && clip.light.subjectOnly)
+  )
+}
+
+/** ¿Alguna capa de ajuste del proyecto protege la piel? (Entonces se segmentan los clips de debajo.) */
+export function protectsSkinBelow(p: { tracks: { clips: { type: string; color?: { protectSkin?: boolean } }[] }[] }): boolean {
+  return p.tracks.some((t) => t.clips.some((c) => c.type === 'adjust' && Boolean(c.color?.protectSkin)))
 }
