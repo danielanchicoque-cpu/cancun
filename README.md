@@ -4,13 +4,13 @@ Editor de video para Windows con línea de tiempo, LUTs, quitar fondo y retoque 
 
 <!-- PENDIENTE: captura de la interfaz. Guardar en docs/interfaz.png y reemplazar esta línea por: ![Interfaz de Cancun](docs/interfaz.png) -->
 
-> Versión temprana (0.2.0). Funciona, pero tiene fallas y cosas a medias. Haz copia de tus proyectos importantes y, si algo se rompe, abre un issue.
+> Versión temprana (0.2.1). Funciona, pero tiene fallas y cosas a medias. Haz copia de tus proyectos importantes y, si algo se rompe, abre un issue.
 
 ## Descargar
 
 Instalador para Windows (.exe): <https://github.com/danielanchicoque-cpu/cancun/releases/latest>
 
-Baja `Cancun-Instalador-0.2.0.exe`, ejecútalo y abre Cancun desde el menú Inicio. Windows puede mostrar un aviso de SmartScreen porque el instalador no está firmado: "Más información" y "Ejecutar de todos modos".
+Baja `Cancun-Instalador-0.2.1.exe`, ejecútalo y abre Cancun desde el menú Inicio. Windows puede mostrar un aviso de SmartScreen porque el instalador no está firmado: "Más información" y "Ejecutar de todos modos".
 
 Requisitos:
 

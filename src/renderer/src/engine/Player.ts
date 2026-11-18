@@ -273,6 +273,32 @@ export class Player {
     return slot.voice
   }
 
+  /**
+   * Recorte cuadrado de la cara detectada en el cuadro actual del clip (como el cuadrito
+   * que muestra CapCut al ajustar los rasgos). null si no hay cara o aún no se detectó.
+   */
+  faceThumb(clipId: string, size = 96): string | null {
+    const slot = this.slots.get(clipId)
+    const face = this.segmenter?.latestFor(clipId)?.marks?.face
+    if (!slot || !face) return null
+    const el = slot.el
+    const w = el instanceof HTMLVideoElement ? el.videoWidth : el.naturalWidth
+    const h = el instanceof HTMLVideoElement ? el.videoHeight : el.naturalHeight
+    if (!w || !h) return null
+    let x0 = 1, y0 = 1, x1 = 0, y1 = 0
+    for (let i = 0; i < face.length; i += 2) {
+      x0 = Math.min(x0, face[i]); x1 = Math.max(x1, face[i])
+      y0 = Math.min(y0, face[i + 1]); y1 = Math.max(y1, face[i + 1])
+    }
+    const side = Math.max((x1 - x0) * w, (y1 - y0) * h) * 1.35
+    const cx = ((x0 + x1) / 2) * w
+    const cy = ((y0 + y1) / 2) * h
+    const c = document.createElement('canvas')
+    c.width = c.height = size
+    c.getContext('2d')!.drawImage(el, cx - side / 2, cy - side / 2, side, side, 0, 0, size, size)
+    return c.toDataURL('image/jpeg', 0.85)
+  }
+
   private dropVoice(s: Slot) {
     if (!s.voice) return
     s.voice.el.pause()

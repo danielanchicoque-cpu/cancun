@@ -1,7 +1,7 @@
 {
   "name": "cancun",
   "productName": "Cancun",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Editor de video de escritorio con CLI para Claude",
   "main": "out/main/index.js",
   "type": "module",
