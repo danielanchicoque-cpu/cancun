@@ -31,6 +31,7 @@ import { applyTransition } from '../actions'
 import { dbToGain, gainToDb } from '../format'
 import { EFFECTS } from '../gl/shaders'
 import { BLENDS, MASKS, TRANSITIONS } from './catalog'
+import { SKIN_TONES as SKIN_TONE_LIST } from '@shared/skinTones'
 import { Icon } from './icons'
 
 const KEY_EPS = US / 120
@@ -578,13 +579,13 @@ function MaskIcon({ shape }: { shape: string }) {
   )
 }
 
-/** Muestras de tono de piel (de clara a oscura), como en CapCut. */
-const SKIN_TONES = ['#f3d5c4', '#e9c0a3', '#d9a47f', '#c98b62', '#b5744e', '#9c5f3d', '#82492d', '#5f3420']
+/** Muestras de tono de piel (de clara a oscura): las nueve de CapCut (ver shared/skinTones). */
+const SKIN_TONES = SKIN_TONE_LIST.map((t) => t.swatch)
 
 type RetouchKey = keyof Retouch
 const FEATURE_TABS = {
   eyes: { label: 'Ojos', keys: [['eyeSize', 'Tamaño'], ['eyeBright', 'Brillo en ojos', 'pos'], ['eyeDistance', 'Distancia'], ['eyeHeight', 'Posición']] },
-  nose: { label: 'Nariz', keys: [['noseSize', 'Tamaño'], ['noseWidth', 'Alas'], ['noseBridge', 'Puente'], ['noseHeight', 'Posición']] },
+  nose: { label: 'Nariz', keys: [['noseSize', 'Tamaño'], ['noseWidth', 'Ancho'], ['noseStereo', 'Estereoscópica', 'pos'], ['noseBridge', 'Puente'], ['noseHeight', 'Posición']] },
   mouth: { label: 'Boca', keys: [['mouthSize', 'Tamaño'], ['teeth', 'Blanqueamiento dental', 'pos'], ['smile', 'Sonrisa'], ['lips', 'Grosor de labios']] },
   brows: { label: 'Cejas', keys: [['browNatural', 'Natural', 'pos'], ['browThick', 'Grosor'], ['browHeight', 'Altura']] }
 } as const
@@ -619,6 +620,7 @@ function RetouchTab({ clip }: { clip: MediaClip }) {
             {pos('smooth', 'Suavizar')}
             {pos('whiten', 'Blanqueamiento')}
             {pos('removeBlemishes', 'Borrar imperfecciones')}
+            {pos('wrinkles', 'Eliminación de arrugas')}
             {pos('evenTone', 'Uniforme')}
             {pos('smileLines', 'Arrugas de sonrisa')}
             {pos('darkCircles', 'Ojeras')}
@@ -703,7 +705,7 @@ function AudioTab({ clip }: { clip: MediaClip }) {
   const vol = useProp(clip, 'volume', 1)
   const maxFade = clip.duration / US / 2
   const live = useLive()
-  const toggle = (key: keyof typeof fx, label: string, hint: string) => (
+  const toggle = (key: 'normalize' | 'denoise' | 'isolateVoice' | 'enhanceVoice', label: string, hint: string) => (
     <div className="group">
       <label className="check">
         <input type="checkbox" checked={fx[key]} onChange={(e) => update(clip, { audioFx: { [key]: e.target.checked } })} />
@@ -720,10 +722,24 @@ function AudioTab({ clip }: { clip: MediaClip }) {
         <Slider label="Desaparición progresiva" value={clip.fadeOut / US} min={0} max={maxFade} step={0.1} suffix="s" onChange={(v) => live.set({ op: 'updateClip', clipId: clip.id, patch: { fadeOut: Math.round(v * US) } })} live={live} reset={0} />
       </Group>
       {toggle('normalize', 'Normalizar la intensidad', 'Lleva el clip a −14 LUFS, el nivel de TikTok, Instagram y YouTube.')}
-      {toggle('enhanceVoice', 'Mejorar voz', 'Limpia graves, da presencia y comprime para una voz más clara y pareja.')}
-      {toggle('denoise', 'Reducir el ruido', 'Quita el ruido de fondo constante (ventilador, aire, zumbido).')}
-      {toggle('isolateVoice', 'Aislar voz', 'Reducción de ruido fuerte y filtro de banda de voz.')}
-      <div className="hint">Los efectos de audio se aplican al exportar; la vista previa suena sin ellos.</div>
+      {toggle('enhanceVoice', 'Mejorar voz', 'Limpia el fondo, quita barro, da presencia y empareja el volumen: voz de estudio.')}
+      {fx.enhanceVoice && (
+        <div className="group">
+          <div className="row">
+            <label>Intensidad</label>
+          </div>
+          <div className="chip-tabs">
+            {[0, 0.25, 0.5, 0.75, 1].map((v) => (
+              <button key={v} className={Math.abs((fx.enhanceAmount ?? 1) - v) < 0.01 ? 'active' : ''} onClick={() => update(clip, { audioFx: { enhanceAmount: v } })}>
+                {Math.round(v * 100)}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+      {toggle('denoise', 'Reducir el ruido', 'Baja unos 15 dB el ruido de fondo (ventilador, aire, calle) sin tocar la voz.')}
+      {toggle('isolateVoice', 'Aislar voz', 'Deja solo la voz: quita graves y música de fondo y silencia los huecos entre frases.')}
+      <div className="hint">La voz se procesa en tu equipo la primera vez (unos segundos por minuto de audio); después la vista previa y la exportación usan el resultado.</div>
     </div>
   )
 }

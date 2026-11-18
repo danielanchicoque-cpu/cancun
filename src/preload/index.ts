@@ -70,13 +70,17 @@ const api = {
     list: () => invoke('luts:list'),
     sync: () => invoke('luts:sync'),
     import: () => invoke('luts:import'),
+    importFolder: () => invoke('luts:importFolder'),
     load: (path: string) => invoke('luts:load', path)
+  },
+  voice: {
+    prepare: (job: unknown) => invoke('voice:prepare', job)
   },
   exporter: {
     pick: (name: string, format: string) => invoke('export:pick', name, format),
     start: (p: unknown, output: string) => invoke('export:start', p, output),
     cancel: () => invoke('export:cancel'),
-    onProgress: (cb: (p: { fraction: number; fps: number; eta: number }) => void) => listen('export:progress', cb)
+    onProgress: (cb: (p: { fraction: number; fps: number; eta: number; stage?: string }) => void) => listen('export:progress', cb)
   },
   subtitles: {
     run: (jobs: unknown, lang: string) => invoke('subtitles:run', jobs, lang),

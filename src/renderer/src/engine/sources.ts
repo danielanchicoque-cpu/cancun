@@ -27,11 +27,35 @@ class ImageProvider implements FrameProvider {
 }
 
 class WebCodecsProvider implements FrameProvider {
-  constructor(private dec: ClipDecoder) {}
-  frameAt(us: number) {
-    return this.dec.frameAt(us)
+  private canvas: OffscreenCanvas | null = null
+  /** Último cuadro girado: se libera al pedir el siguiente (el compositor ya lo subió). */
+  private last: ImageBitmap | null = null
+  /** `rotation`: grados en sentido horario guardados en el archivo (videos de celular). */
+  constructor(
+    private dec: ClipDecoder,
+    private rotation = 0
+  ) {}
+  async frameAt(us: number) {
+    const frame = await this.dec.frameAt(us)
+    if (!frame || !this.rotation) return frame
+    // WebCodecs entrega el cuadro sin girar: se gira en la GPU con un lienzo 2D.
+    const w = frame.displayWidth
+    const h = frame.displayHeight
+    const quarter = this.rotation === 90 || this.rotation === 270
+    const cw = quarter ? h : w
+    const ch = quarter ? w : h
+    if (!this.canvas || this.canvas.width !== cw || this.canvas.height !== ch) this.canvas = new OffscreenCanvas(cw, ch)
+    const ctx = this.canvas.getContext('2d')!
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.translate(cw / 2, ch / 2)
+    ctx.rotate((this.rotation * Math.PI) / 180)
+    ctx.drawImage(frame, -w / 2, -h / 2)
+    this.last?.close()
+    this.last = this.canvas.transferToImageBitmap()
+    return this.last
   }
   close() {
+    this.last?.close()
     this.dec.close()
   }
 }
@@ -77,7 +101,7 @@ export async function openProvider(media: Media, clip: MediaClip, fps: number): 
     console.warn('WebCodecs falló:', err instanceof Error ? err.message : err)
     return null
   })
-  if (dec) return new WebCodecsProvider(dec)
+  if (dec) return new WebCodecsProvider(dec, media.rotation ?? 0)
   // Resolución de decodificación: la del medio, limitada a 1920 por el lado mayor.
   const mw = media.width ?? 1920
   const mh = media.height ?? 1080

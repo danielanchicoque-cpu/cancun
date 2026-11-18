@@ -20,6 +20,8 @@ export interface Media {
   hasAudio?: boolean
   /** Matriz de color declarada en el archivo (bt709, bt470bg…); ausente = sin etiquetar. */
   colorSpace?: string
+  /** Giro guardado en el archivo (0, 90, 180, 270), p. ej. videos verticales de iPhone. */
+  rotation?: number
 }
 
 export interface Transform {
@@ -83,6 +85,8 @@ export interface Retouch {
   smooth: number
   whiten: number
   removeBlemishes: number
+  /** Eliminación de arrugas (frente, patas de gallo, surcos), 0..1. */
+  wrinkles: number
   evenTone: number
   smileLines: number
   darkCircles: number
@@ -105,6 +109,8 @@ export interface Retouch {
   noseWidth: number
   noseBridge: number
   noseHeight: number
+  /** Nariz "estereoscópica": luz en el puente y sombra a los lados (más definida), 0..1. */
+  noseStereo: number
   mouthSize: number
   /** Blanqueamiento dental, 0..1. */
   teeth: number
@@ -142,6 +148,8 @@ export interface AudioFx {
   denoise: boolean
   isolateVoice: boolean
   enhanceVoice: boolean
+  /** Intensidad de "Mejorar voz" (0, 0.25, 0.5, 0.75 o 1, como en CapCut). */
+  enhanceAmount: number
 }
 
 export type BlendMode =
@@ -473,6 +481,7 @@ export const defaultRetouch = (): Retouch => ({
   smooth: 0,
   whiten: 0,
   removeBlemishes: 0,
+  wrinkles: 0,
   evenTone: 0,
   smileLines: 0,
   darkCircles: 0,
@@ -492,6 +501,7 @@ export const defaultRetouch = (): Retouch => ({
   noseWidth: 0,
   noseBridge: 0,
   noseHeight: 0,
+  noseStereo: 0,
   mouthSize: 0,
   teeth: 0,
   smile: 0,
@@ -511,9 +521,9 @@ export const defaultRetouch = (): Retouch => ({
 })
 
 /** Claves de cada sección del retoque (para restablecer y para saber qué detectar). */
-export const RETOUCH_SKIN = ['smooth', 'whiten', 'removeBlemishes', 'evenTone', 'smileLines', 'darkCircles'] as const
+export const RETOUCH_SKIN = ['smooth', 'whiten', 'removeBlemishes', 'wrinkles', 'evenTone', 'smileLines', 'darkCircles'] as const
 export const RETOUCH_FACE = ['faceSmall', 'faceSlim', 'faceWide', 'hairline'] as const
-export const RETOUCH_FEATURES = ['eyeSize', 'eyeBright', 'eyeDistance', 'eyeHeight', 'noseSize', 'noseWidth', 'noseBridge', 'noseHeight', 'mouthSize', 'teeth', 'smile', 'lips', 'browNatural', 'browThick', 'browHeight'] as const
+export const RETOUCH_FEATURES = ['eyeSize', 'eyeBright', 'eyeDistance', 'eyeHeight', 'noseSize', 'noseWidth', 'noseBridge', 'noseHeight', 'noseStereo', 'mouthSize', 'teeth', 'smile', 'lips', 'browNatural', 'browThick', 'browHeight'] as const
 export const RETOUCH_BODY = ['slim', 'head', 'neck', 'arms', 'bodyWidth', 'waist', 'torso', 'hips'] as const
 
 export const defaultBackground = (): Background => ({
@@ -527,7 +537,8 @@ export const defaultAudioFx = (): AudioFx => ({
   normalize: false,
   denoise: false,
   isolateVoice: false,
-  enhanceVoice: false
+  enhanceVoice: false,
+  enhanceAmount: 1
 })
 
 export const defaultAnimations = (): Animations => ({ in: null, out: null, combo: null })
@@ -588,6 +599,7 @@ export function normalizeProject(raw: Project): Project {
         c.mask = { ...defaultMask(), ...c.mask }
         c.light = { ...defaultLight(), ...c.light }
         c.retouch = { ...defaultRetouch(), ...c.retouch }
+        if (c.audioFx) c.audioFx = { ...defaultAudioFx(), ...c.audioFx }
         c.background = { ...defaultBackground(), ...c.background }
       }
     }

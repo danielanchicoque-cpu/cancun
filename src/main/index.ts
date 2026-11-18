@@ -1,5 +1,5 @@
 import { app, BrowserWindow, dialog, ipcMain, protocol, shell } from 'electron'
-import { createReadStream, statSync } from 'node:fs'
+import { createReadStream, existsSync, statSync } from 'node:fs'
 import { dirname, extname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
@@ -12,6 +12,8 @@ import { importLuts, listLuts, loadLut, syncFromCapCut } from './luts'
 import { type SoundRoot, filmstrip, listSounds, probe, reverseMedia, soundMeta, unpackedRoot, waveform } from './media'
 import { mkdir } from 'node:fs/promises'
 import { transcribeJobs } from './subtitles'
+import { prepareVoice } from './voice'
+import type { VoiceJob } from '@shared/voice'
 import { deleteProject, listProjects, loadProject, saveCover, saveProject } from './projectStore'
 
 // Esquema propio para que el reproductor lea archivos locales con saltos (Range),
@@ -123,7 +125,21 @@ async function handleBridge(method: string, params: Record<string, unknown>): Pr
 // --- IPC de la interfaz ---------------------------------------------------------------
 function registerIpc() {
   ipcMain.handle('projects:list', () => listProjects())
-  ipcMain.handle('projects:load', async (_e, id: string) => normalizeProject(await loadProject(id)))
+  ipcMain.handle('projects:load', async (_e, id: string) => {
+    const p = normalizeProject(await loadProject(id))
+    // Proyectos de antes de guardar el giro: se vuelven a leer los videos para corregir
+    // el tamaño de los verticales de celular (salían aplastados).
+    for (const m of Object.values(p.media)) {
+      if (m.kind !== 'video' || m.rotation !== undefined || !existsSync(m.path)) continue
+      try {
+        const fresh = await probe(m.path)
+        Object.assign(m, { width: fresh.width, height: fresh.height, rotation: fresh.rotation })
+      } catch {
+        // Si no se puede leer, se deja como estaba.
+      }
+    }
+    return p
+  })
   ipcMain.handle('projects:save', (_e, p: Project) => saveProject(p))
   ipcMain.handle('projects:cover', (_e, id: string, dataUrl: string) => saveCover(id, dataUrl))
   ipcMain.handle('projects:delete', (_e, id: string) => deleteProject(id))
@@ -172,13 +188,21 @@ function registerIpc() {
   ipcMain.handle('chat:reset', () => resetChat())
   registerRenderIpc()
 
+  ipcMain.handle('voice:prepare', (_e, job: VoiceJob) => prepareVoice(job))
   ipcMain.handle('luts:list', () => listLuts())
   ipcMain.handle('luts:sync', () => syncFromCapCut())
   ipcMain.handle('luts:import', async () => {
     const r = await dialog.showOpenDialog(win!, {
       title: 'Importar LUT',
       properties: ['openFile', 'multiSelections'],
-      filters: [{ name: 'LUT', extensions: ['cube'] }]
+      filters: [{ name: 'LUT (.cube o filtro .png)', extensions: ['cube', 'png'] }]
+    })
+    return r.canceled ? [] : importLuts(r.filePaths)
+  })
+  ipcMain.handle('luts:importFolder', async () => {
+    const r = await dialog.showOpenDialog(win!, {
+      title: 'Importar una carpeta de LUTs (con subcarpetas)',
+      properties: ['openDirectory', 'multiSelections']
     })
     return r.canceled ? [] : importLuts(r.filePaths)
   })

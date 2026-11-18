@@ -4,6 +4,7 @@
 
 import { interpolate } from './animate.ts'
 import { type Clip, type MediaClip, type Project, US, autoBitrate, clipEnd, projectDuration } from './project.ts'
+import type { VoiceResult } from './voice.ts'
 
 export interface ExportPlan {
   args: string[]
@@ -24,6 +25,8 @@ export interface ExportOptions {
   /** De dónde lee ffmpeg el video crudo (por defecto stdin). */
   input?: string
   range?: { start: number; end: number }
+  /** Audio ya procesado por el motor de voz, por id de clip (ver shared/voice.ts). */
+  voice?: Record<string, VoiceResult>
 }
 
 const sec = (us: number) => (us / US).toFixed(6)
@@ -99,16 +102,13 @@ export function buildExport(project: Project, opts: ExportOptions): ExportPlan {
       const to = Math.min(clipEnd(clip), start + total)
       if (to <= from) continue
       const skip = (from - clip.start) * clip.speed
-      inputs.push('-ss', sec(clip.sourceIn + skip), '-t', sec((to - from) * clip.speed + US / 10), '-i', media.path)
+      // Con efectos de voz se lee el WAV ya limpio (empieza en `voice.start` del original).
+      const voice = opts.voice?.[clip.id]
+      const at = clip.sourceIn + skip - (voice ? voice.start : 0)
+      inputs.push('-ss', sec(Math.max(0, at)), '-t', sec((to - from) * clip.speed + US / 10), '-i', voice ? voice.path : media.path)
       const i = inputCount++
       const steps = [`atrim=duration=${sec((to - from) * clip.speed)}`, 'asetpts=PTS-STARTPTS', ...atempoChain(clip.speed)]
       const fx = clip.audioFx
-      if (fx.denoise || fx.isolateVoice) steps.push(`afftdn=nr=${fx.isolateVoice ? 24 : 12}:nf=-40:tn=1`)
-      if (fx.isolateVoice) steps.push('highpass=f=90', 'lowpass=f=8000')
-      if (fx.enhanceVoice) {
-        steps.push('highpass=f=70', 'equalizer=f=200:t=q:w=1:g=-2', 'equalizer=f=3500:t=q:w=1.2:g=3')
-        steps.push('acompressor=threshold=-20dB:ratio=3:attack=5:release=120:makeup=3')
-      }
       if (fx.normalize) steps.push('loudnorm=I=-14:TP=-1.5:LRA=11')
       // El tiempo del filtro empieza en `from`; se corre para que coincida con el del clip.
       const local = (from - clip.start) / US

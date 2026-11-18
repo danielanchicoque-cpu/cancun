@@ -4,7 +4,7 @@
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs'
 import { spawn } from 'node:child_process'
-import { join, resolve, dirname } from 'node:path'
+import { basename, dirname, extname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { tmpdir } from 'node:os'
 
@@ -41,7 +41,13 @@ Editar (se ve en vivo; Ctrl+Z en la app deshace el lote completo)
                                       y crea los subtítulos en la pista "Subtítulos" (local, con GPU)
 
 Exportar
-  cancun export <salida.mp4>          exporta con la configuración del proyecto`
+  cancun export <salida.mp4>          exporta con la configuración del proyecto
+
+Limpiar clips para usarlos en otro lado (HyperFrames, otro editor)
+  cancun clean <videos...> [--out-dir carpeta] [--retouch natural|suave|fuerte|ninguno]
+               [--voice reducir|aislar|ninguno] [--enhance 0|0.25|0.5|0.75|1] [--normalize]
+      Cada video sale como <nombre>-limpio.mp4 (mismo tamaño y fps) con el retoque de
+      piel y la voz limpia. Por defecto: --retouch natural --voice reducir --enhance 0.75`
 
 const OPS = `Operaciones (campo "op"). Tiempos en segundos; ids salen de "cancun summary".
 
@@ -76,10 +82,13 @@ Propiedades (updateClip con parche parcial)
     {"color":{"adjust":{"brightness":0,"contrast":0,"saturation":0,"exposure":0,"temperature":0,"tint":0,"highlights":0,"shadows":0,"sharpen":0,"vignette":0}}}  (-1..1)
     {"background":{"mode":"none|auto|chroma","feather":0.3,"shrink":0,"chroma":{"color":"#00ff00","intensity":0.4,"shadow":0.1}}}   auto = quitar fondo con IA
     {"retouch":{...}}  retoque como CapCut (casillas skin/face/features/body activan cada sección):
-        piel 0..1: smooth whiten removeBlemishes evenTone smileLines darkCircles, skinTone:"#d9a47f"|null, skinToneAmount
+        piel 0..1: smooth (suavizar) whiten (blanqueamiento) removeBlemishes (imperfecciones) wrinkles (arrugas)
+                evenTone smileLines darkCircles, skinTone:"#d2a687"|null, skinToneAmount
+                tonos (claro→oscuro): #ddb39a #d7ae9a #d2a687 #c79473 #cc9273 #bd896d #bf8360 #bc8163 #ad7b64
+                receta natural tipo CapCut: smooth 0.4, removeBlemishes 0.5, wrinkles 0.3, whiten 0.15
         rostro -1..1: faceSmall faceSlim faceWide hairline
         rasgos -1..1: eyeSize eyeDistance eyeHeight noseSize noseWidth noseBridge noseHeight mouthSize smile lips browThick browHeight
-                0..1: eyeBright teeth (blanqueamiento dental) browNatural
+                0..1: eyeBright noseStereo (nariz estereoscópica) teeth (blanqueamiento dental) browNatural
         cuerpo -1..1: slim head neck arms bodyWidth waist torso hips
     {"mask":{"shape":"none|linear|mirror|circle|rectangle|heart|star","x":0,"y":0,"width":0.6,"height":0.6,"rotation":0,"feather":0.05,"invert":false}}
     {"light":{"enabled":true,"color":"#ffd9a8","intensity":0.5,"x":-0.4,"y":-0.4,"radius":0.8,"subjectOnly":true}}
@@ -87,7 +96,9 @@ Propiedades (updateClip con parche parcial)
         entrada/salida: fade zoomIn zoomOut slideLeft slideRight slideUp slideDown rotate spin pop drop swing
         combo: pulse shake swing float spin breathe
     {"volume":1}  (ganancia lineal)   {"fadeIn":0.5,"fadeOut":1}   {"speed":2}   {"freeze":true}
-    {"audioFx":{"normalize":true,"denoise":true,"enhanceVoice":true,"isolateVoice":false}}
+    {"audioFx":{"normalize":true,"denoise":true,"enhanceVoice":true,"enhanceAmount":0.75,"isolateVoice":false}}
+        denoise: baja ~15 dB el fondo · isolateVoice: solo la voz (quita música y graves)
+        enhanceVoice: voz de estudio (EQ, eses, compresión), enhanceAmount 0|0.25|0.5|0.75|1. Se procesa en local y queda en caché.
     texto: {"text":"...","style":{...}}    efecto: {"effect":"glitch","params":{"intensity":0.8}}
 
 Keyframes (props: transform.x|y|scale|scaleY|rotation|opacity, volume, color.lut.intensity,
@@ -144,6 +155,51 @@ function hasFlag(args, name) {
   if (i < 0) return false
   args.splice(i, 1)
   return true
+}
+
+/** Recetas de retoque para "cancun clean" (valores como en el panel de Retoque). */
+const RETOUCH_PRESETS = {
+  suave: { smooth: 0.25, removeBlemishes: 0.3, teeth: 0.15 },
+  natural: { smooth: 0.4, removeBlemishes: 0.5, wrinkles: 0.3, whiten: 0.1, teeth: 0.2 },
+  fuerte: { smooth: 0.55, removeBlemishes: 0.8, wrinkles: 0.5, evenTone: 0.3, whiten: 0.15, teeth: 0.3 },
+  ninguno: null
+}
+
+async function clean(args) {
+  const outDir = flag(args, 'out-dir')
+  const retouchName = flag(args, 'retouch', 'natural')
+  const voice = flag(args, 'voice', 'reducir')
+  const enhance = Number(flag(args, 'enhance', '0.75'))
+  const normalize = hasFlag(args, 'normalize')
+  if (!(retouchName in RETOUCH_PRESETS)) throw new Error(`--retouch debe ser: ${Object.keys(RETOUCH_PRESETS).join(', ')}`)
+  if (!['reducir', 'aislar', 'ninguno'].includes(voice)) throw new Error('--voice debe ser: reducir, aislar o ninguno')
+  if (!args.length) throw new Error('Falta al menos un video')
+  const results = []
+  for (const file of args) {
+    const input = resolve(file)
+    const name = basename(input, extname(input))
+    await call('new', { name: `limpio-${name}`, width: 1920, height: 1080, fps: 30 })
+    const imported = await call('import', { paths: [input], add: false })
+    const media = (imported.media ?? imported)[0]
+    const state = await call('state')
+    const m = state.project.media[media.id]
+    const ops = [
+      { op: 'setCanvas', width: m.width ?? 1920, height: m.height ?? 1080, fps: Math.round(m.fps ?? 30) },
+      { op: 'addClip', mediaId: media.id }
+    ]
+    await call('apply', { ops })
+    const after = await call('state')
+    const clip = after.project.tracks.flatMap((t) => t.clips).find((c) => c.mediaId === media.id)
+    const preset = RETOUCH_PRESETS[retouchName]
+    const audioFx = { denoise: voice === 'reducir', isolateVoice: voice === 'aislar', enhanceVoice: enhance > 0, enhanceAmount: Math.round(enhance * 4) / 4, normalize }
+    await call('apply', { ops: [{ op: 'updateClip', clipId: clip.id, patch: { ...(preset ? { retouch: preset } : {}), audioFx } }] })
+    const output = resolve(outDir ?? dirname(input), `${name}-limpio.mp4`)
+    mkdirSync(dirname(output), { recursive: true })
+    await call('export', { output })
+    results.push(output)
+    console.error(`listo: ${output}`)
+  }
+  return results
 }
 
 function connect() {
@@ -283,6 +339,8 @@ async function main() {
       const out = resolve(args[0] ?? 'export.mp4')
       return print(await call('export', { output: out }))
     }
+    case 'clean':
+      return print(await clean(args))
     default:
       throw new Error(`Comando desconocido: ${cmd}\n\n${HELP}`)
   }
